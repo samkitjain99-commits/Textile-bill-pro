@@ -1,38 +1,84 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  Search, Plus, Trash2, Printer, X, Save, UserPlus, Filter, Landmark, Calendar as CalendarIcon,
-  FileText, Edit2, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, IndianRupee, Check, AlertCircle,
-  Download, Upload, Eye, TrendingUp, TrendingDown, BarChart3, PieChart, Clock, Users, Camera, LogOut, Key, Share2,
+  AlertCircle, ArrowLeft, ArrowRight, BarChart3, Calendar as CalendarIcon, Camera, Check, ChevronDown, ChevronUp, Clock, Download, Edit2, Eye, FileText, Filter, IndianRupee, Key, Landmark, LogOut, PieChart, Plus, Printer, Save, Search, Share2, Trash2, TrendingDown, TrendingUp, Upload, UserPlus, Users, X,
 } from "lucide-react";
 
-// ---------- design tokens ----------
-const ink = "#1E2A44";      // deep indigo — headers, primary text
-const inkSoft = "#4A5D8A";  // secondary indigo
-const thread = "#DB9A3C";   // saffron — accent / primary action
-const threadDeep = "#B97D26";
-const paper = "#F6F3EC";    // warm parchment background
-const card = "#FFFFFF";
-const hairline = "#E4DFD3";
-const muted = "#8A8272";
-const success = "#3F7D5C";
-const successBg = "#E7F1EB";
-const danger = "#B5482F";
-const dangerBg = "#FBEAE4";
+// Shared foundations used by the main app and by the lazily-loaded
+// Dashboard and Data Analytics tabs. Anything both sides need — design
+// tokens, formatters, the units registry, and small shared UI pieces —
+// lives here, so neither side imports the other (which would defeat the
+// code split by pulling the whole app back into that chunk).
 
-// Shared form-input styling (module scope; some modals define local copies
-// which harmlessly shadow these).
-const inputCls = "flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-sm outline-none";
+const ink = "#1E2A44";      // deep indigo — headers, primary text
+
+const inkSoft = "#4A5D8A";  // secondary indigo
+
+const muted = "#8A8272";
+
+const card = "#FFFFFF";
+
+const paper = "#F6F3EC";    // warm parchment background
+
+const hairline = "#E4DFD3";
+
+const thread = "#DB9A3C";   // saffron — accent / primary action
+
+const success = "#3F7D5C";
+
+const danger = "#B5482F";
+
 const inputStyle = { border: `1px solid ${hairline}`, color: ink, background: "#fff" };
 
-const fontImport = `
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
-`;
+const DEFAULT_UNITS = [
+  { id: "u-yards", name: "Yards", abbr: "Yd", count: false },
+  { id: "u-meter", name: "Meter", abbr: "Mtr", count: false },
+  { id: "u-pcs", name: "Pcs", abbr: "pcs", count: true },
+  { id: "u-gagra", name: "Gagra", abbr: "Gg", count: false },
+  { id: "u-rida", name: "Rida", abbr: "Rd", count: false },
+  { id: "u-rolls", name: "Rolls", abbr: "Rol", count: true },
+];
+
+// One-time cleanup for books saved before Gagra/Rida/Pcs/Rolls had short
+// abbreviations — their `units` list already has the old values baked in
+// (e.g. "Gagra" as its own abbreviation), so updating DEFAULT_UNITS alone
+// doesn't reach existing companies. This only touches the built-in unit IDs,
+// and only when the abbreviation still exactly matches the old default — a
+// unit the person renamed themselves is left alone.
+const STALE_BUILTIN_ABBR = { "u-pcs": "Pcs", "u-gagra": "Gagra", "u-rida": "Rida", "u-rolls": "Roll" };
+function migrateUnitAbbrs(units) {
+  const byId = Object.fromEntries(DEFAULT_UNITS.map((u) => [u.id, u.abbr]));
+  return units.map((u) =>
+    STALE_BUILTIN_ABBR[u.id] === u.abbr ? { ...u, abbr: byId[u.id] } : u
+  );
+}
+
+let UNIT_LIST = DEFAULT_UNITS.slice();
+
+let UNIT_OPTIONS = UNIT_LIST.map((u) => u.name);
+
+let UNIT_ABBR = Object.fromEntries(UNIT_LIST.map((u) => [u.name, u.abbr]));
+
+let COUNT_UNITS = new Set(UNIT_LIST.filter((u) => u.count).map((u) => u.name));
+
+function applyUnits(list) {
+  UNIT_LIST = (Array.isArray(list) && list.length ? list : DEFAULT_UNITS).slice();
+  UNIT_OPTIONS = UNIT_LIST.map((u) => u.name);
+  UNIT_ABBR = Object.fromEntries(UNIT_LIST.map((u) => [u.name, u.abbr || u.name]));
+  COUNT_UNITS = new Set(UNIT_LIST.filter((u) => u.count).map((u) => u.name));
+}
+
+const toLocalISO = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
 
 const fmtMoney = (n) =>
   "₹" + (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 
-// Compact form for chart labels, where full figures would be too cramped —
-// "100k" instead of "₹1,00,000".
+const fmtNum = (n) => (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
+
 function fmtMoneyCompact(n) {
   const v = Number(n) || 0;
   const abs = Math.abs(v);
@@ -41,33 +87,6 @@ function fmtMoneyCompact(n) {
   return `${sign}${Math.round(abs)}`;
 }
 
-const fmtDate = (iso) => {
-  if (!iso) return "";
-  const d = parseDateFlexible(iso);
-  if (!d || isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
-};
-
-// Concise DD/MM/YY (2-digit year) — used inside the narrow date-filter inputs.
-const fmtDateShort = (iso) => {
-  if (!iso) return "";
-  const d = parseDateFlexible(iso);
-  if (!d || isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" });
-};
-
-// Date + time stamp (DD/MM/YY HH:MM) from an epoch-ms value, for the Chart of
-// Accounts "Created" column so the user can see newest ledgers to export.
-const fmtDateTime = (ms) => {
-  if (!ms) return "";
-  const d = new Date(ms);
-  if (isNaN(d.getTime())) return "";
-  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" });
-  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
-  return `${date} ${time}`;
-};
-
-// Accepts YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, ISO timestamps, or a Date.
 function parseDateFlexible(v) {
   if (v instanceof Date) return v;
   if (typeof v !== "string") return null;
@@ -86,24 +105,364 @@ function parseDateFlexible(v) {
   return isNaN(d.getTime()) ? null : d;
 }
 
-// Normalize any supported date string to YYYY-MM-DD (local) for storage.
 function normalizeDate(v) {
   const d = parseDateFlexible(v);
   return d && !isNaN(d.getTime()) ? toLocalISO(d) : "";
 }
 
-// Format a Date as YYYY-MM-DD in LOCAL time. Using toISOString() here would
-// convert to UTC and shift the 1st of the month back to the 30th/31st in
-// timezones ahead of UTC (e.g. IST), so we build the string from local parts.
-const toLocalISO = (d) => {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+const fmtDate = (iso) => {
+  if (!iso) return "";
+  const d = parseDateFlexible(iso);
+  if (!d || isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" });
 };
+
+const fmtDateShort = (iso) => {
+  if (!iso) return "";
+  const d = parseDateFlexible(iso);
+  if (!d || isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" });
+};
+
 const todayISO = () => toLocalISO(new Date());
 
-// Current financial year (Apr 1 – Mar 31) as {from, to} local ISO strings.
+function csvEscape(v) {
+  const str = String(v ?? "");
+  return /[",\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+}
+
+function downloadCsv(rows, filename) {
+  if (!rows.length) return;
+  const headers = Object.keys(rows[0]);
+  const lines = [
+    headers.map(csvEscape).join(","),
+    ...rows.map((r) => headers.map((h) => csvEscape(r[h])).join(",")),
+  ];
+  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${filename}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+const isCountUnit = (unit) => COUNT_UNITS.has(unit);
+
+const isCancelledItem = (it) => !!it?.cancelled;
+
+function lineAmount(it) {
+  if (isCancelledItem(it)) return 0;
+  const qty = Number(it.qty) || 0;
+  const rate = Number(it.rate) || 0;
+  const size = isCountUnit(it.unit) ? 1 : Number(it.size) || 0;
+  return qty * rate * size;
+}
+
+function purchaseTotal(p) {
+  const amt = Number(p.amount) || 0;
+  if (amt > 0) return amt;
+  if (Array.isArray(p.items) && p.items.length) {
+    const items = p.items.reduce((s, it) => s + lineAmount(it), 0);
+    // `amount` is normally authoritative and already includes other expenses;
+    // this fallback only runs for records without it, so expenses are added
+    // here too rather than being silently dropped.
+    const expenses = (p.expenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    return items + expenses;
+  }
+  return 0;
+}
+
+const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function buildFYMonths(from, to) {
+  if (!from || !to) return [];
+  const months = [];
+  let [y, m] = from.slice(0, 7).split("-").map(Number);
+  const [ey, em] = to.slice(0, 7).split("-").map(Number);
+  let guard = 0;
+  while ((y < ey || (y === ey && m <= em)) && guard++ < 60) {
+    months.push({ key: `${y}-${String(m).padStart(2, "0")}`, label: `${MONTH_NAMES_SHORT[m - 1]} ${y}` });
+    m++; if (m > 12) { m = 1; y++; }
+  }
+  return months;
+}
+
+function paymentAccountLabel(p) {
+  const bankEligible = p.mode === "Bank" || p.mode === "Cheque";
+  return bankEligible ? (p.bankName || p.mode) : (p.mode || "Cash");
+}
+
+function receiptAccountLabel(r) {
+  return r.mode === "Bank" ? (r.bankName || "Bank") : r.mode;
+}
+
+function DateField({ value, onChange, className, style, placeholder = "dd/mm/yy" }) {
+  const [text, setText] = useState(value ? fmtDateShort(value) : "");
+  useEffect(() => { setText(value ? fmtDateShort(value) : ""); }, [value]);
+  const nativeRef = useRef(null);
+  // On a touch device the little calendar icon is a poor tap target, and a
+  // tap on a date field nearly always means "show me a calendar" — so the
+  // whole field opens the native picker (a full-size transparent date input
+  // laid over it, which is far more reliable on iOS than calling
+  // showPicker()). On mouse/desktop the field stays a text box you can type
+  // into — much faster for backdating — with the icon as the calendar
+  // affordance, so nothing is lost there.
+  const touchFirst = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
+  const commit = (raw) => {
+    const s = (raw || "").trim();
+    if (!s) { onChange(""); return; }
+    const iso = normalizeDate(s);
+    if (iso) onChange(iso);
+    else setText(value ? fmtDateShort(value) : ""); // revert if unparseable
+  };
+  return (
+    <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+      <input
+        type="text"
+        inputMode="numeric"
+        value={text}
+        placeholder={placeholder}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={(e) => commit(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter") commit(e.target.value); }}
+        readOnly={touchFirst}
+        className={className}
+        style={{ ...style, width: "100%", boxSizing: "border-box", paddingRight: 30 }}
+      />
+      <button
+        type="button"
+        onClick={() => { if (nativeRef.current?.showPicker) nativeRef.current.showPicker(); else nativeRef.current?.focus(); }}
+        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", color: muted, background: "transparent", padding: 0 }}
+        tabIndex={-1}
+        aria-label="Open calendar"
+      >
+        <CalendarIcon size={15} />
+      </button>
+      <input
+        ref={nativeRef}
+        type="date"
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+        style={touchFirst
+          ? { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }
+          : { position: "absolute", right: 4, top: 0, width: 22, height: "100%", opacity: 0, pointerEvents: "none" }}
+        tabIndex={-1}
+        aria-label="Pick a date"
+      />
+    </div>
+  );
+}
+
+function InlineSelect({ value, options, onChange, className, style, placeholder = "Select", disabled = false }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef(null);
+  const opts = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
+  const selected = opts.find((o) => o.value === value);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+  return (
+    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
+      <button
+        type="button"
+        onClick={() => { if (!disabled) setOpen((o) => !o); }}
+        disabled={disabled}
+        className={className}
+        style={{ ...style, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left", cursor: disabled ? "not-allowed" : "pointer", width: "100%" }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: selected ? ink : muted }}>
+          {selected ? selected.label : placeholder}
+        </span>
+        <ChevronDown size={16} color={muted} style={{ flexShrink: 0 }} />
+      </button>
+      {open && !disabled && (
+        <div
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50,
+            background: "#fff", border: `1px solid ${hairline}`, borderRadius: 10,
+            boxShadow: "0 8px 24px rgba(30,42,68,0.14)", maxHeight: 260, overflowY: "auto",
+          }}
+        >
+          {opts.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => { onChange(o.value); setOpen(false); }}
+              className="w-full text-left px-3 py-2"
+              style={{ background: o.value === value ? "#FBF4E7" : "transparent", color: ink, fontSize: 13.5, fontWeight: o.value === value ? 600 : 400, borderBottom: `1px solid ${hairline}` }}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchableSelect({ value, options, onChange, placeholder = "Select…", inputStyle, className }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const wrapRef = useRef(null);
+  const selectedLabel = options.find((o) => o.value === value)?.label || "";
+
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); setQuery(""); } };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const filtered = query.trim()
+    ? options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()) || (o.sub || "").toLowerCase().includes(query.trim().toLowerCase()))
+    : options;
+
+  const pick = (v) => { onChange(v); setOpen(false); setQuery(""); };
+
+  return (
+    <div ref={wrapRef} style={{ position: "relative", flex: 1, minWidth: 0 }}>
+      <input
+        type="text"
+        value={open ? query : selectedLabel}
+        placeholder={selectedLabel || placeholder}
+        onFocus={() => setOpen(true)}
+        onClick={() => setOpen(true)}
+        onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true); }}
+        className={className || "w-full px-3 py-2.5 rounded-lg text-sm outline-none"}
+        style={{ ...inputStyle, width: "100%", boxSizing: "border-box", paddingRight: 30, color: selectedLabel && !open ? ink : undefined }}
+      />
+      <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: muted, pointerEvents: "none" }}>
+        <ChevronDown size={16} />
+      </span>
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 40,
+            background: "#fff", border: `1px solid ${hairline}`, borderRadius: 10,
+            boxShadow: "0 8px 24px rgba(30,42,68,0.14)", maxHeight: 260, overflowY: "auto",
+          }}
+        >
+          {filtered.length === 0 ? (
+            <div style={{ padding: "10px 12px", color: muted, fontSize: 13 }}>No matches</div>
+          ) : (
+            filtered.map((o) => (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => pick(o.value)}
+                className="w-full text-left px-3 py-2"
+                style={{
+                  background: o.value === value ? "#FBF4E7" : "transparent",
+                  borderBottom: `1px solid ${hairline}`,
+                }}
+              >
+                <div style={{ color: ink, fontSize: 13.5, fontWeight: 600 }}>{o.label}</div>
+                {o.sub ? <div style={{ color: muted, fontSize: 11 }}>{o.sub}</div> : null}
+              </button>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DateRangeBar({ from, to, setFrom, setTo, quickRangeDates }) {
+  const [pf, setPf] = useState(from);
+  const [pt, setPt] = useState(to);
+  useEffect(() => { setPf(from); }, [from]);
+  useEffect(() => { setPt(to); }, [to]);
+  const inputStyle = { border: `1px solid ${hairline}`, color: ink, background: "#fff", minWidth: 0 };
+  return (
+    <div className="mb-4">
+      <div className="flex items-end gap-1.5 mb-3">
+        <div style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div style={{ color: muted, fontSize: 11, marginBottom: 3 }}>From</div>
+          <DateField value={pf} onChange={setPf} className="px-1.5 py-2 rounded-lg text-xs outline-none" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+        </div>
+        <div style={{ flex: "1 1 0", minWidth: 0 }}>
+          <div style={{ color: muted, fontSize: 11, marginBottom: 3 }}>To</div>
+          <DateField value={pt} onChange={setPt} className="px-1.5 py-2 rounded-lg text-xs outline-none" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
+        </div>
+        <button
+          onClick={() => { setFrom(pf); setTo(pt); }}
+          className="flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm font-semibold shrink-0"
+          style={{ background: ink, color: "#fff" }}
+        >
+          <Filter size={14} /> Filter
+        </button>
+        {(from || to || pf || pt) && (
+          <button
+            onClick={() => { setFrom(""); setTo(""); setPf(""); setPt(""); }}
+            className="px-3 py-2 rounded-lg text-xs font-medium shrink-0"
+            style={{ border: `1px solid ${hairline}`, color: muted, background: "#fff" }}
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        {[["current", "Current Month"], ["previous", "Previous Month"], ["fy", "Current Financial Year"]].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => { const r = quickRangeDates(k); setFrom(r.from); setTo(r.to); }}
+            className="py-2 rounded-lg text-xs font-semibold"
+            style={{ border: `1px solid ${hairline}`, color: inkSoft, background: card }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Shared foundations used by the main app and by the lazily-loaded
+// Dashboard and Data Analytics tabs.
+//
+// This module exists so those two heavy tabs can live in their own files and
+// be code-split out of the initial bundle. Anything both sides need — design
+// tokens, formatters, the units registry, and the small shared UI pieces —
+// lives here, so neither side has to import the other (which would defeat
+// the split by pulling the whole app back into the chunk).
+
+// ---------- design tokens ----------
+const successBg = "#E7F1EB";
+const dangerBg = "#FBEAE4";
+const inputCls = "flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-sm outline-none";
+
+const fontImport = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap');
+`;
+
+// ---------- units of measurement ----------
+
+
+
+// ---------- formatters & helpers ----------
+
+
+// Compact form for chart labels, where full figures would be too cramped —
+// "100k" instead of "₹1,00,000".
+
+
+const fmtDateTime = (ms) => {
+  if (!ms) return "";
+  const d = new Date(ms);
+  if (isNaN(d.getTime())) return "";
+  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "2-digit", year: "2-digit" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${date} ${time}`;
+};
+
+
+
 function currentFYDates() {
   const now = new Date();
   const startYear = now.getMonth() >= 3 ? now.getFullYear() : now.getFullYear() - 1;
@@ -113,9 +472,6 @@ function currentFYDates() {
   };
 }
 
-// Current calendar month as {from, to} local ISO strings — the default
-// window for Sales, Purchases, Receipts, and Payments (was the full
-// financial year, which is a lot of rows to load by default).
 function currentMonthDates() {
   const now = new Date();
   return {
@@ -123,6 +479,14 @@ function currentMonthDates() {
     to: toLocalISO(new Date(now.getFullYear(), now.getMonth() + 1, 0)),
   };
 }
+
+// Accepts YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, ISO timestamps, or a Date.
+
+// Normalize any supported date string to YYYY-MM-DD (local) for storage.
+
+
+// Current calendar month as {from, to} local ISO strings — the default
+// window for Sales, Purchases, Receipts, and Payments (was the full
 
 // Indian FY (1 Apr – 31 Mar) helpers for the global year picker.
 function currentFyStartYear() {
@@ -156,11 +520,86 @@ function availableFyYears(collections) {
 }
 const uid = () => Math.random().toString(36).slice(2, 10);
 
-// CSV/bulk-import records should be timestamped by their own transaction
-// date, not the moment the import happened to run — otherwise historical
-// invoices/receipts/etc. all show today's date/time in "Created" and sort
-// as if they just happened. `offset` (ms) keeps a stable relative order
-// among rows that share the same date.
+
+
+
+
+
+
+
+
+
+
+
+// ---------- shared UI ----------
+const InlineRow = ({ label, children }) => (
+  <div className="flex items-center gap-2">
+    <span style={{ width: 92, flexShrink: 0, fontSize: 13, color: muted }}>{label}</span>
+    {children}
+  </div>
+);
+
+function IconBtn({ children, onClick, title, danger }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      className="flex items-center justify-center rounded-md"
+      style={{ width: 30, height: 30, color: danger ? "#B5482F" : inkSoft, background: "transparent" }}
+      onMouseDown={(e) => e.preventDefault()}
+    >
+      {children}
+    </button>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <div className="rounded-xl p-4 mb-4" style={{ background: card, border: `1px solid ${hairline}` }}>
+      <div style={{ color: inkSoft, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 12 }}>
+        {title.toUpperCase()}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function Stitch({ color = hairline, margin = "0" }) {
+  return (
+    <div
+      style={{
+        height: 0,
+        margin,
+        borderTop: `2px dashed ${color}`,
+        opacity: 0.9,
+      }}
+    />
+  );
+}
+
+function SpoolBadge({ children }) {
+  return (
+    <span
+      className="inline-flex items-center justify-center rounded-full text-xs font-semibold"
+      style={{
+        width: 22,
+        height: 22,
+        background: thread,
+        color: "#fff",
+        fontFamily: "'IBM Plex Mono', monospace",
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+
+
+
+
+
+// ---------- design tokens ----------
 function importedCreatedAt(dateStr, offset = 0) {
   const d = new Date(`${dateStr || todayISO()}T12:00:00`);
   const ms = isNaN(d.getTime()) ? Date.now() : d.getTime();
@@ -179,22 +618,9 @@ function parseImportedCreatedAt(raw, fallbackDateStr, offset = 0) {
   return importedCreatedAt(fallbackDateStr, offset);
 }
 
-const MONTH_NAMES_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 // Ordered list of months (YYYY-MM key + display label) spanning a date range,
 // so months with no activity still appear as zero rows in the Dashboard's
 // monthly tables — matches the reference app's buildMonths().
-function buildFYMonths(from, to) {
-  if (!from || !to) return [];
-  const months = [];
-  let [y, m] = from.slice(0, 7).split("-").map(Number);
-  const [ey, em] = to.slice(0, 7).split("-").map(Number);
-  let guard = 0;
-  while ((y < ey || (y === ey && m <= em)) && guard++ < 60) {
-    months.push({ key: `${y}-${String(m).padStart(2, "0")}`, label: `${MONTH_NAMES_SHORT[m - 1]} ${y}` });
-    m++; if (m > 12) { m = 1; y++; }
-  }
-  return months;
-}
 
 // Legacy single-company key. Still read once, then migrated into a company.
 const STORAGE_KEY = "textile-sales-data";
@@ -239,6 +665,10 @@ function splitBookByFy(book) {
     customers: book.customers || [],
     vendors: book.vendors || [],
     bankAccounts: book.bankAccounts || [],
+    // Company-level master data — same category as customers/vendors, not
+    // tied to any financial year, so it belongs in meta rather than a shard.
+    units: book.units || [],
+    shipFroms: book.shipFroms || [],
     counters: book.counters || { VCH: 0, CC: 0, PUR: 0, PAY: 0 },
   };
   const shards = {};
@@ -258,6 +688,8 @@ function mergeBookFromShards(meta, shardList) {
     customers: meta?.customers || [],
     vendors: meta?.vendors || [],
     bankAccounts: meta?.bankAccounts || [],
+    units: meta?.units || [],
+    shipFroms: meta?.shipFroms || [],
     counters: meta?.counters || { VCH: 0, CC: 0, PUR: 0, PAY: 0 },
     invoices: [], receipts: [], purchases: [], payments: [],
   };
@@ -320,26 +752,35 @@ function deriveCounters(book, stored) {
 const emptyBook = () => ({
   customers: [], invoices: [], receipts: [], bankAccounts: [],
   vendors: [], purchases: [], payments: [],
+  units: DEFAULT_UNITS.slice(),
+  // "From" addresses printed on shipping labels — the business may dispatch
+  // from more than one place, so this is a managed list picked per label.
+  shipFroms: [],
   counters: { VCH: 0, CC: 0, PUR: 0, PAY: 0 },
 });
 
-const UNIT_OPTIONS = ["Yards", "Meter", "Pcs", "Gagra", "Rida", "Rolls"];
+// ---------- units of measurement (user-manageable) ----------
+// Units are company data (see the Units screen), but they're needed by
+// module-scope helpers like lineAmount and by deep print/PDF components that
+// can't receive props. So the live list is mirrored into these module-level
+// bindings via applyUnits() whenever the stored list changes; components read
+// them fresh on each render, and every unit change re-renders the tree.
+
+
 
 const emptyItem = () => ({ id: uid(), unit: "Yards", qty: "", size: "", rate: "" });
 const emptyExpense = () => ({ id: uid(), label: "", pct: "", amount: "" });
 
-// Pcs and Rolls are counted units — they have no meaningful "size"
-// dimension, so size is treated as 1 and its input is disabled. Keeping this
-// as one helper means the rule is defined once rather than repeated at every
-// place that needs it.
-const isCountUnit = (unit) => unit === "Pcs" || unit === "Rolls";
+// A "counted" unit (Pcs, Rolls, …) has no meaningful size dimension — size is
+// treated as 1 and its input is disabled. Which units count is now part of
+// the unit definition rather than hardcoded.
 
-function lineAmount(it) {
-  const qty = Number(it.qty) || 0;
-  const rate = Number(it.rate) || 0;
-  const size = isCountUnit(it.unit) ? 1 : Number(it.size) || 0;
-  return qty * rate * size;
-}
+// A cancelled line stays on the document so the Sr numbers of the remaining
+// lines never shift — physical goods are already numbered against them — but
+// it contributes nothing. Zeroing it here means every total in the app
+// (subtotals, invoice totals, ledgers, analytics, Tally) excludes it without
+// each of those needing its own check.
+
 
 // A purchase bill can hold multiple line items (like a sales invoice); items[]
 // gives the line-item breakdown for display. The stored `amount` field is
@@ -349,19 +790,6 @@ function lineAmount(it) {
 // larger than a raw items-sum since the source app's total may bake in
 // discount/tax/other-expenses that our items[] shape doesn't carry per-line.
 // items-sum is only used as a fallback when amount is missing entirely.
-function purchaseTotal(p) {
-  const amt = Number(p.amount) || 0;
-  if (amt > 0) return amt;
-  if (Array.isArray(p.items) && p.items.length) {
-    const items = p.items.reduce((s, it) => s + lineAmount(it), 0);
-    // `amount` is normally authoritative and already includes other expenses;
-    // this fallback only runs for records without it, so expenses are added
-    // here too rather than being silently dropped.
-    const expenses = (p.expenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    return items + expenses;
-  }
-  return 0;
-}
 
 // ---------- invoice QR code: encode/decode ----------
 // A QR code has a hard capacity ceiling (~2,950 bytes in byte mode at the
@@ -394,6 +822,7 @@ function byteLen(s) {
 function encodeInvoiceQr(invoice, customerName) {
   const esc = (s) => String(s ?? "").replace(/[|;:,]/g, " ").trim();
   const itemsPart = (invoice.items || [])
+    .filter((it) => !isCancelledItem(it))
     .map((it) => `${QR_UNIT_CODE[it.unit] || "P"},${it.qty},${isCountUnit(it.unit) ? "" : it.size},${it.rate}`)
     .join(";");
   const expPart = (invoice.expenses || [])
@@ -440,8 +869,6 @@ function decodeInvoiceQr(text) {
   });
   return { ok: true, mode: "full", invoiceNo, customerName, date, reference, items, expenses };
 }
-const UNIT_ABBR = { Yards: "Yd", Meter: "Mtr", Pcs: "Pcs", Gagra: "Gagra", Rida: "Rida", Rolls: "Roll" };
-const fmtNum = (n) => (Number(n) || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 });
 
 function packingRows(items) {
   return items.map((it, i) => {
@@ -450,40 +877,24 @@ function packingRows(items) {
     const isPcs = isCountUnit(it.unit);
     const size = isPcs ? 0 : Number(it.size) || 0;
     const abbr = UNIT_ABBR[it.unit] || it.unit;
+    // A cancelled line keeps its Sr number on the printed document — that's
+    // the whole point, since the physical goods are numbered against it — but
+    // prints as CANCELLED with no figures.
+    const off = isCancelledItem(it);
     return {
       sn: i + 1,
-      qty,
-      sizeDisplay: isPcs ? "-" : `${size} ${abbr}`,
-      totalQtyDisplay: isPcs ? `${qty} Pcs` : `${qty * size} ${abbr}`,
-      rate,
+      cancelled: off,
+      qty: off ? "" : qty,
+      sizeDisplay: off ? "CANCELLED" : (isPcs ? "-" : `${size} ${abbr}`),
+      totalQtyDisplay: off ? "" : (isPcs ? `${qty} Pcs` : `${qty * size} ${abbr}`),
+      rate: off ? "" : rate,
       amount: lineAmount(it),
     };
   });
 }
 
 // ---------- CSV helpers (format matches the reference app's exports) ----------
-function csvEscape(v) {
-  const str = String(v ?? "");
-  return /[",\n\r]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
-}
 
-function downloadCsv(rows, filename) {
-  if (!rows.length) return;
-  const headers = Object.keys(rows[0]);
-  const lines = [
-    headers.map(csvEscape).join(","),
-    ...rows.map((r) => headers.map((h) => csvEscape(r[h])).join(",")),
-  ];
-  const blob = new Blob(["\ufeff" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${filename}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
 
 // Generic text-file download (used for Tally XML export).
 function downloadTextFile(text, filename, mime = "application/xml") {
@@ -534,14 +945,27 @@ function buildTallyLedgersXml(accounts, companyName = "") {
   const messages = accounts.map((a) => {
     const ob = Number(a.openingBalance) || 0;
     // Tally sign: Dr = negative, Cr = positive; 2 decimals.
+    // Tally accepts several <ADDRESS> lines. Line 1 is the party's regular
+    // address (the short label used across the app); anything below comes
+    // from their shipping address, so the exported ledger carries the full
+    // postal address rather than just the short label.
+    const addrLines = [
+      a.address,
+      a.shipAddress,
+      [[a.shipCity, a.shipState].filter(Boolean).join(", "), a.shipPin && `PIN ${a.shipPin}`].filter(Boolean).join(" — "),
+    ].map((l) => String(l || "").trim()).filter(Boolean);
+    const addrXml = (indent) => addrLines.length
+      ? `\n${indent}<ADDRESS.LIST TYPE="String">` +
+        addrLines.map((l) => `\n${indent} <ADDRESS>${xmlEscape(l)}</ADDRESS>`).join("") +
+        `\n${indent}</ADDRESS.LIST>`
+      : "";
+
     const signed = ob === 0 ? "" : (a.balanceType === "Cr" ? ob : -ob).toFixed(2);
     const isParty = a.type === "Customer" || a.type === "Vendor";
     const nm = xmlEscape(a.name);
     let body = "";
     // Field order matches the working reference file exactly.
-    if (a.address) {
-      body += `\n      <ADDRESS.LIST TYPE="String">\n       <ADDRESS>${xmlEscape(a.address)}</ADDRESS>\n      </ADDRESS.LIST>`;
-    }
+    body += addrXml("      ");
     body += `\n      <MAILINGNAME.LIST TYPE="String">\n       <MAILINGNAME>${nm}</MAILINGNAME>\n      </MAILINGNAME.LIST>`;
     body += `\n      <COUNTRYNAME>India</COUNTRYNAME>`;
     body += `\n      <COUNTRYOFRESIDENCE>India</COUNTRYOFRESIDENCE>`;
@@ -555,7 +979,7 @@ function buildTallyLedgersXml(accounts, companyName = "") {
     if (signed !== "") body += `\n      <OPENINGBALANCE>${signed}</OPENINGBALANCE>`;
     // LEDMAILINGDETAILS.LIST (address repeated here + applicable-from + country)
     body += `\n      <LEDMAILINGDETAILS.LIST>`;
-    if (a.address) body += `\n       <ADDRESS.LIST TYPE="String">\n        <ADDRESS>${xmlEscape(a.address)}</ADDRESS>\n       </ADDRESS.LIST>`;
+    body += addrXml("       ");
     body += `\n       <APPLICABLEFROM>${appDate}</APPLICABLEFROM>`;
     body += `\n       <MAILINGNAME>${nm}</MAILINGNAME>`;
     body += `\n       <COUNTRY>India</COUNTRY>`;
@@ -1035,35 +1459,7 @@ const blankDraft = (series, nextNo) => ({
 });
 
 // ---------- stitched divider, the app's signature motif ----------
-function Stitch({ color = hairline, margin = "0" }) {
-  return (
-    <div
-      style={{
-        height: 0,
-        margin,
-        borderTop: `2px dashed ${color}`,
-        opacity: 0.9,
-      }}
-    />
-  );
-}
 
-function SpoolBadge({ children }) {
-  return (
-    <span
-      className="inline-flex items-center justify-center rounded-full text-xs font-semibold"
-      style={{
-        width: 22,
-        height: 22,
-        background: thread,
-        color: "#fff",
-        fontFamily: "'IBM Plex Mono', monospace",
-      }}
-    >
-      {children}
-    </span>
-  );
-}
 
 // ---------- app users (admin-managed, in-app) ----------
 // Simple client-side login: no backend, no external service — works on any
@@ -1266,6 +1662,9 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
   const [vendors, setVendors] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [units, setUnits] = useState(() => DEFAULT_UNITS.slice());
+  const [shipFroms, setShipFroms] = useState([]);
+  const [labelInvoice, setLabelInvoice] = useState(null); // invoice whose shipping label is open
   // O(1) lookup by id, rebuilt only when the underlying list changes — used
   // in place of `customers.find(c => c.id === x)` / `vendors.find(...)`
   // wherever that lookup happens per-row (list/print/report rendering did a
@@ -1450,6 +1849,8 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     setVendors(book.vendors || []);
     setPurchases(book.purchases || []);
     setPayments(book.payments || []);
+    setUnits(migrateUnitAbbrs(Array.isArray(book.units) && book.units.length ? book.units : DEFAULT_UNITS.slice()));
+    setShipFroms(Array.isArray(book.shipFroms) ? book.shipFroms : []);
     setCounters(deriveCounters(book, book.counters));
   }, []);
 
@@ -1556,6 +1957,12 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     })();
   }, [applyBook]);
 
+  // Mirror the stored units into the module-level bindings that lineAmount,
+  // the print components, and the unit dropdowns all read. useMemo (not
+  // useEffect) so it runs during render, before children read the values —
+  // an effect would leave one render showing the previous unit list.
+  useMemo(() => applyUnits(units), [units]);
+
   // ---------- persist (debounced, per-company) ----------
   const persist = useCallback((next, companyId) => {
     if (!companyId) return;
@@ -1579,8 +1986,8 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     // Don't write until the book for THIS company has been loaded in, or we'd
     // stamp the previous company's data onto the newly selected one.
     if (loadedCompanyRef.current !== activeCompanyId) return;
-    persist({ customers, invoices, receipts, bankAccounts, vendors, purchases, payments, counters }, activeCompanyId);
-  }, [customers, invoices, receipts, bankAccounts, vendors, purchases, payments, counters, loaded, activeCompanyId, persist]);
+    persist({ customers, invoices, receipts, bankAccounts, vendors, purchases, payments, units, shipFroms, counters }, activeCompanyId);
+  }, [customers, invoices, receipts, bankAccounts, vendors, purchases, payments, units, shipFroms, counters, loaded, activeCompanyId, persist]);
 
   // ---------- company management ----------
   const writeIndex = async (list, activeId) => {
@@ -1630,6 +2037,101 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     await writeIndex(list, id);
     setViewingId(null); setDraft(null); setSelected([]); setCustSelected([]);
     setModule("sales");
+    return true;
+  }
+
+  // Year-end carry-forward: creates a new company containing only the master
+  // data (customers, vendors, banks, units, from-addresses) with each party's
+  // closing balance as on `cutoff` becoming their opening balance. No
+  // invoices, receipts, purchases or payments are copied — the old company
+  // keeps the full history and stays readable, which is the point: the new
+  // book starts small while nothing is lost.
+  //
+  // Balances are computed here rather than reusing customerBalances/
+  // vendorBalances, because those follow the tab's own date filters and this
+  // needs a specific cutoff regardless of what's on screen.
+  function buildCarryForwardBook(cutoff) {
+    const upTo = (d) => !cutoff || (d && d <= cutoff);
+
+    const custBal = new Map();
+    for (const c of customers) {
+      custBal.set(c.id, (Number(c.openingBalance) || 0) * (c.openingBalanceType === "Cr" ? -1 : 1));
+    }
+    for (const i of invoices) {
+      if (!custBal.has(i.customerId) || !upTo(i.date)) continue;
+      custBal.set(i.customerId, custBal.get(i.customerId) + invoiceTotal(i));
+    }
+    for (const r of receipts) {
+      if (!custBal.has(r.customerId) || !upTo(r.date)) continue;
+      custBal.set(r.customerId, custBal.get(r.customerId) - (Number(r.amount) || 0));
+    }
+
+    const vendBal = new Map();
+    for (const v of vendors) {
+      vendBal.set(v.id, (Number(v.openingBalance) || 0) * (v.openingBalanceType === "Cr" ? -1 : 1));
+    }
+    for (const p of purchases) {
+      if (!vendBal.has(p.vendorId) || !upTo(p.date)) continue;
+      vendBal.set(p.vendorId, vendBal.get(p.vendorId) + purchaseTotal(p));
+    }
+    for (const pay of payments) {
+      if (!vendBal.has(pay.vendorId) || !upTo(pay.date)) continue;
+      vendBal.set(pay.vendorId, vendBal.get(pay.vendorId) - (Number(pay.amount) || 0));
+    }
+
+    // The new book opens the day after the cutoff.
+    const openDate = (() => {
+      const d = new Date(cutoff);
+      d.setDate(d.getDate() + 1);
+      return toLocalISO(d);
+    })();
+
+    const carryParty = (p, bal, defaultType) => {
+      const rounded = Math.round(bal);
+      return {
+        ...p,
+        openingBalance: rounded === 0 ? "" : String(Math.abs(rounded)),
+        // Customers are debtors (+ = Dr), vendors creditors (+ = Cr); a
+        // negative balance flips the side.
+        openingBalanceType: rounded === 0 ? defaultType : (rounded > 0 ? defaultType : (defaultType === "Dr" ? "Cr" : "Dr")),
+        openingBalanceDate: openDate,
+      };
+    };
+
+    return {
+      ...emptyBook(),
+      customers: customers.map((c) => carryParty(c, custBal.get(c.id) || 0, "Dr")),
+      vendors: vendors.map((v) => carryParty(v, vendBal.get(v.id) || 0, "Cr")),
+      bankAccounts: bankAccounts.map((b) => ({ ...b })),
+      units: units.map((u) => ({ ...u })),
+      shipFroms: shipFroms.map((f) => ({ ...f })),
+    };
+  }
+
+  async function carryForward(name, cutoff) {
+    const trimmed = (name || "").trim();
+    if (!trimmed) return false;
+    if (companies.some((c) => c.name.toLowerCase() === trimmed.toLowerCase())) {
+      setError("A company with that name already exists.");
+      setTimeout(() => setError(""), 4000);
+      return false;
+    }
+    const book = buildCarryForwardBook(cutoff);
+    const id = uid();
+    const company = { id, name: trimmed, createdAt: Date.now() };
+    try {
+      shardCacheRef.current = { companyId: null, meta: "", fys: {} };
+      await writeBookSharded(id, book);
+    } catch (e) { /* storage may be unavailable; continue in memory */ }
+    const list = [...companies, company];
+    setCompanies(list);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    loadedCompanyRef.current = id;
+    setActiveCompanyId(id);
+    applyBook(book);
+    await writeIndex(list, id);
+    setViewingId(null); setDraft(null); setSelected([]); setCustSelected([]);
+    setModule("customers");
     return true;
   }
 
@@ -1741,10 +2243,32 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
   }
 
   // ---------- actions ----------
+  // Next number for a series, derived from the invoices that actually exist
+  // rather than from the stored counter. The counter only ever moves up, so
+  // it stays reserved even when the invoice that claimed a number is later
+  // deleted or moved to the other series — which left gaps and skipped
+  // numbers. Reading the live list means the next invoice always continues
+  // from the last one genuinely saved in that series.
+  //
+  // Only plain PREFIX-<digits> numbers count (matching deriveCounters), so
+  // date-segmented imports like VCH-2606-Z034 don't distort the sequence.
+  function nextNoForSeries(series) {
+    let max = 0;
+    for (const inv of invoices) {
+      const no = String(inv.invoiceNo || "");
+      const invSeries = inv.series || (no.startsWith("CC") ? "CC" : "VCH");
+      if (invSeries !== series) continue;
+      const m = no.match(/^[A-Za-z]+-(\d+)[A-Za-z]?$/);
+      if (!m) continue;
+      const n = parseInt(m[1], 10);
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+    return max + 1;
+  }
+
   function startNewInvoice() {
     const series = "VCH";
-    const nextNo = (counters[series] || 0) + 1;
-    setDraft(blankDraft(series, nextNo));
+    setDraft(blankDraft(series, nextNoForSeries(series)));
     setView("form");
   }
 
@@ -1754,7 +2278,9 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
   }
 
   function changeSeries(series) {
-    const nextNo = (counters[series] || 0) + 1;
+    // Same derivation as startNewInvoice — switching series mid-draft should
+    // land on that series' real next number, not the stored counter's.
+    const nextNo = nextNoForSeries(series);
     setDraft((d) => ({
       ...d,
       series,
@@ -1867,8 +2393,20 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
 
   const blankCustomerForm = () => ({
     name: "", phone1: "", phone2: "", email: "", address: "",
+    // Separate from `address` (a short label used across the app for
+    // grouping and display) — this is the full postal address a courier
+    // needs, and is only used for shipping labels.
+    shipName: "", shipAddress: "", shipCity: "", shipState: "", shipPin: "", shipPhone: "", transporter: "",
     openingBalance: "", openingBalanceType: "Dr", openingBalanceDate: todayISO(),
   });
+
+  // Lightweight patch used by the shipping-label screen's inline editor —
+  // updates just the shipping fields on one customer without touching the
+  // full customer-edit modal's state (newCustomer/editingCustomerId), so the
+  // two editing paths can't collide with each other.
+  function updateCustomerShipping(customerId, patch) {
+    setCustomers((prev) => prev.map((c) => (c.id === customerId ? { ...c, ...patch } : c)));
+  }
 
   function saveCustomer() {
     if (!newCustomer.name.trim()) return;
@@ -1896,6 +2434,9 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     setNewCustomer({
       name: c.name || "", phone1: c.phone1 || "", phone2: c.phone2 || "",
       email: c.email || "", address: c.address || "",
+      shipName: c.shipName || "", shipAddress: c.shipAddress || "", shipCity: c.shipCity || "",
+      shipState: c.shipState || "", transporter: c.transporter || "",
+      shipPin: c.shipPin || "", shipPhone: c.shipPhone || "",
       openingBalance: c.openingBalance || "", openingBalanceType: c.openingBalanceType || "Dr",
       openingBalanceDate: c.openingBalanceDate || todayISO(),
     });
@@ -2062,6 +2603,34 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
       bankAccountId: "",
     });
     setShowReceiptModal(true);
+  }
+
+  // Saves the unit list. Line items store the unit by *name*, so a rename has
+  // to rewrite every saved item too — otherwise those lines would point at a
+  // unit that no longer exists and silently lose their size/abbreviation
+  // handling.
+  function saveUnits(next, oldName, newName) {
+    setUnits(next);
+    if (oldName && newName && oldName !== newName) {
+      const rename = (items) => (items || []).map((it) => (it.unit === oldName ? { ...it, unit: newName } : it));
+      setInvoices((prev) => prev.map((inv) => (inv.items ? { ...inv, items: rename(inv.items) } : inv)));
+      setPurchases((prev) => prev.map((p) => (p.items ? { ...p, items: rename(p.items) } : p)));
+    }
+  }
+
+  // Cancels or restores a single line on a saved invoice. The line is kept
+  // (so the Sr numbers of the others don't shift — the physical goods are
+  // already numbered against them) but stops counting toward any total.
+  // Invoice status is re-derived afterwards, since the total has changed and
+  // an existing receipt may now cover the invoice in full.
+  function toggleItemCancel(invoice, itemId) {
+    setInvoices((prev) => {
+      const next = prev.map((inv) => (inv.id !== invoice.id ? inv : {
+        ...inv,
+        items: (inv.items || []).map((it) => (it.id === itemId ? { ...it, cancelled: !it.cancelled } : it)),
+      }));
+      return reconcileInvoiceStatuses(next, receipts);
+    });
   }
 
   // ---------- payments ----------
@@ -2332,7 +2901,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
   function buildSyncBook() {
     return {
       meta: { app: "textile-bill", version: 3, exportedAt: new Date().toISOString(), company: activeCompanyName },
-      customers, invoices, receipts, bankAccounts, vendors, purchases, payments, counters,
+      customers, invoices, receipts, bankAccounts, vendors, purchases, payments, units, shipFroms, counters,
     };
   }
 
@@ -2341,7 +2910,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
   function buildBackupFile() {
     const payload = JSON.stringify({
       meta: { app: "textile-bill", version: 3, exportedAt: new Date().toISOString(), company: activeCompanyName },
-      customers, invoices, receipts, bankAccounts, vendors, purchases, payments, counters,
+      customers, invoices, receipts, bankAccounts, vendors, purchases, payments, units, shipFroms, counters,
     }, null, 2);
     const slug = (activeCompanyName || "company").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const fname = `textile-bill-${slug}-${todayISO()}.json`;
@@ -2466,7 +3035,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     const invOut = invoices.map((inv) => {
       invCounter++;
       invoiceIdMap.set(inv.id, invCounter);
-      const itemsOut = (inv.items || []).map(mapItemOut);
+      const itemsOut = (inv.items || []).filter((it) => !isCancelledItem(it)).map(mapItemOut);
       const subtotal = itemsOut.reduce((s, it) => s + it.amount, 0);
       const expenses = inv.expenses || [];
       const expenseTotal = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
@@ -2601,7 +3170,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
       { name: "Sales Return", type: "Sales", address: "", phone: "", email: "", openingBalance: "", balanceType: "" },
       { name: "Purchase Return", type: "Purchase", address: "", phone: "", email: "", openingBalance: "", balanceType: "" },
       { name: "Round Off", type: "Income", address: "", phone: "", email: "", openingBalance: "", balanceType: "" },
-      ...customers.map((c) => ({ name: c.name, type: "Customer", address: c.address || "", phone: c.phone1 || "", email: c.email || "", openingBalance: c.openingBalance || "", balanceType: c.openingBalanceType || "Dr" })),
+      ...customers.map((c) => ({ name: c.name, type: "Customer", address: c.address || "", shipAddress: c.shipAddress || "", shipCity: c.shipCity || "", shipState: c.shipState || "", shipPin: c.shipPin || "", phone: c.phone1 || "", email: c.email || "", openingBalance: c.openingBalance || "", balanceType: c.openingBalanceType || "Dr" })),
       ...vendors.map((v) => ({ name: v.name, type: "Vendor", address: v.address || "", phone: v.phone1 || "", email: v.email || "", openingBalance: v.openingBalance || "", balanceType: v.openingBalanceType || "Cr" })),
       ...bankAccounts.map((b) => ({ name: b.bankName, type: "Bank", address: "", phone: "", email: "", openingBalance: "", balanceType: "" })),
     ];
@@ -3054,6 +3623,142 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
       } catch (e) {
         setError("Couldn't import: expected columns Date, Party Name, Amount, Mode…");
         setTimeout(() => setError(""), 5000);
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // Import Tally ledger masters (customers, vendors) with opening balances —
+  // for bringing a party list over from an existing Tally company. Reads the
+  // XML exported from Tally (Display → List of Accounts → Export, or a
+  // "Ledgers" masters export) — the same shape this app's own "Tally
+  // Masters XML" export produces, so a round-trip through Tally works too.
+  //
+  // Ledgers use dotted tag names (ADDRESS.LIST, MAILINGNAME.LIST, …), which
+  // CSS-selector syntax would misread as a class selector — querySelector
+  // is deliberately avoided here in favour of getElementsByTagName, which
+  // has no such ambiguity.
+  //
+  // Sign convention matches Tally's own export: a negative OPENINGBALANCE is
+  // Dr, a positive one is Cr — verified against this app's own export code,
+  // which uses the identical convention in reverse.
+  function importTallyMastersXml(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const xmlText = String(reader.result);
+        const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+        if (doc.getElementsByTagName("parsererror").length) throw new Error("bad xml");
+
+        const ledgerEls = Array.from(doc.getElementsByTagName("LEDGER"));
+        if (!ledgerEls.length) throw new Error("no ledgers");
+
+        const textOf = (el, tag) => {
+          const n = el.getElementsByTagName(tag)[0];
+          return n && n.textContent ? n.textContent.trim() : "";
+        };
+        const asOn = currentFYDates().from;
+
+        const custCandidates = [];
+        const vendCandidates = [];
+        let skipped = 0;
+
+        for (const el of ledgerEls) {
+          const name = (el.getAttribute("NAME") || "").trim();
+          if (!name) continue;
+          const parent = textOf(el, "PARENT").toLowerCase();
+          const isCustomer = parent.includes("debtor");
+          const isVendor = parent.includes("creditor");
+          if (!isCustomer && !isVendor) { skipped++; continue; }
+
+          const addrLines = [];
+          for (const list of Array.from(el.getElementsByTagName("ADDRESS.LIST"))) {
+            for (const a of Array.from(list.getElementsByTagName("ADDRESS"))) {
+              const t = (a.textContent || "").trim();
+              if (t) addrLines.push(t);
+            }
+          }
+          const obRaw = textOf(el, "OPENINGBALANCE");
+          const obNum = obRaw ? Number(obRaw) : 0;
+          const hasBalance = obRaw !== "" && !Number.isNaN(obNum) && obNum !== 0;
+
+          const record = {
+            id: uid(),
+            name,
+            phone1: textOf(el, "LEDGERMOBILE") || textOf(el, "LEDGERPHONE"),
+            phone2: "",
+            email: textOf(el, "EMAIL"),
+            address: addrLines.join(", "),
+            openingBalance: hasBalance ? String(Math.abs(obNum)) : "",
+            openingBalanceType: hasBalance ? (obNum < 0 ? "Dr" : "Cr") : (isCustomer ? "Dr" : "Cr"),
+            openingBalanceDate: asOn,
+            createdAt: Date.now(),
+          };
+          (isCustomer ? custCandidates : vendCandidates).push(record);
+        }
+
+        if (!custCandidates.length && !vendCandidates.length) {
+          throw new Error(skipped ? "no party ledgers" : "no ledgers");
+        }
+
+        const existingCustNames = new Set(customers.map((c) => c.name.toLowerCase()));
+        const existingVendNames = new Set(vendors.map((v) => v.name.toLowerCase()));
+        const custDups = custCandidates.filter((c) => existingCustNames.has(c.name.toLowerCase()));
+        const custFresh = custCandidates.filter((c) => !existingCustNames.has(c.name.toLowerCase()));
+        const vendDups = vendCandidates.filter((v) => existingVendNames.has(v.name.toLowerCase()));
+        const vendFresh = vendCandidates.filter((v) => !existingVendNames.has(v.name.toLowerCase()));
+        const dupCount = custDups.length + vendDups.length;
+        const newCount = custFresh.length + vendFresh.length;
+
+        const applyImport = (mode) => {
+          if (mode === "replace") {
+            setCustomers((prev) => {
+              const byName = new Map(custDups.map((c) => [c.name.toLowerCase(), c]));
+              const merged = prev.map((c) => {
+                const repl = byName.get(c.name.toLowerCase());
+                return repl ? { ...c, ...repl, id: c.id, createdAt: c.createdAt } : c;
+              });
+              return [...merged, ...custFresh];
+            });
+            setVendors((prev) => {
+              const byName = new Map(vendDups.map((v) => [v.name.toLowerCase(), v]));
+              const merged = prev.map((v) => {
+                const repl = byName.get(v.name.toLowerCase());
+                return repl ? { ...v, ...repl, id: v.id, createdAt: v.createdAt } : v;
+              });
+              return [...merged, ...vendFresh];
+            });
+          } else {
+            if (custFresh.length) setCustomers((prev) => [...prev, ...custFresh]);
+            if (vendFresh.length) setVendors((prev) => [...prev, ...vendFresh]);
+          }
+          if (skipped > 0) {
+            const imported = newCount + (mode === "replace" ? dupCount : 0);
+            setError(`Imported ${imported} part${imported !== 1 ? "ies" : "y"}. Skipped ${skipped} non-party ledger${skipped !== 1 ? "s" : ""} (Cash, Bank, Sales, etc.) — this app only imports Sundry Debtors/Creditors as customers/vendors.`);
+            setTimeout(() => setError(""), 6000);
+          }
+        };
+
+        if (dupCount > 0) {
+          setPendingImport({
+            label: "party",
+            newCount,
+            dupCount,
+            // Named so the person can see exactly who's about to be
+            // overwritten or skipped, not just a bare count — the "party"
+            // label alone doesn't say whether it's a name they'd recognize.
+            dupNames: [
+              ...custDups.map((c) => ({ name: c.name, kind: "Customer" })),
+              ...vendDups.map((v) => ({ name: v.name, kind: "Vendor" })),
+            ],
+            onResolve: (mode) => { if (mode !== "cancel") applyImport(mode); setPendingImport(null); },
+          });
+        } else {
+          applyImport("skip");
+        }
+      } catch (e) {
+        setError("Couldn't import: expected a Tally ledger-masters XML export (Sundry Debtors/Creditors ledgers, with PARENT and OPENINGBALANCE tags).");
+        setTimeout(() => setError(""), 6000);
       }
     };
     reader.readAsText(file);
@@ -3605,6 +4310,10 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
     setVendors(parsed.vendors || []);
     setPurchases(parsed.purchases || []);
     setPayments(parsed.payments || []);
+    // Backups made before units were manageable simply have none — fall back
+    // to the defaults so those restores keep working unchanged.
+    setUnits(migrateUnitAbbrs(Array.isArray(parsed.units) && parsed.units.length ? parsed.units : DEFAULT_UNITS.slice()));
+    setShipFroms(Array.isArray(parsed.shipFroms) ? parsed.shipFroms : []);
     setCounters(deriveCounters(parsed, parsed.counters));
   }
 
@@ -3911,7 +4620,12 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
             customers={customers}
             bankAccounts={bankAccounts}
             vendors={vendors}
+            units={units}
+            invoices={invoices}
+            purchases={purchases}
+            onSaveUnits={saveUnits}
             onImportCustomers={importCustomersCsv}
+            onImportTally={importTallyMastersXml}
             onDeleteAccounts={deleteAccountsByName}
           />
         ) : module === "transactions" ? (
@@ -3989,6 +4703,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
               purchases={purchases}
               vendors={vendors}
               payments={payments}
+              bankAccounts={bankAccounts}
               counters={counters}
               setCounters={setCounters}
               onAdd={(p) => setPurchases((prev) => [...prev, p])}
@@ -4104,6 +4819,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
             invoices={filteredInvoices}
             customers={customers}
             receipts={receipts}
+            bankAccounts={bankAccounts}
             totals={totals}
             search={search}
             setSearch={setSearch}
@@ -4162,6 +4878,8 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
             onAddReceipt={openReceiptForInvoice}
             onEditReceipt={(r) => { setEditingReceipt(r); setShowReceiptModal(true); }}
             onOpenInvoice={(inv) => setViewingId(inv.id)}
+            onToggleItemCancel={toggleItemCancel}
+            onShippingLabel={(inv) => setLabelInvoice(inv)}
           />
         ) : (
           <FormView
@@ -4259,6 +4977,17 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
         />
       )}
 
+      {labelInvoice && (
+        <ShippingLabelModal
+          invoice={labelInvoice}
+          customer={customerById.get(labelInvoice.customerId)}
+          shipFroms={shipFroms}
+          onSaveFroms={setShipFroms}
+          onSaveShipping={updateCustomerShipping}
+          onClose={() => setLabelInvoice(null)}
+        />
+      )}
+
       {showPurchaseModal && (
         <PurchaseModal
           vendors={vendors}
@@ -4292,6 +5021,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
           onCreate={async (name) => { const ok = await createCompany(name); if (ok) setShowCompanyModal(false); return ok; }}
           onRename={renameCompany}
           onDelete={deleteCompany}
+          onCarryForward={async (name, cutoff) => { const ok = await carryForward(name, cutoff); if (ok) setShowCompanyModal(false); return ok; }}
           onClose={() => setShowCompanyModal(false)}
         />
       )}
@@ -4364,6 +5094,7 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
           label={pendingImport.label}
           newCount={pendingImport.newCount}
           dupCount={pendingImport.dupCount}
+          dupNames={pendingImport.dupNames}
           onResolve={pendingImport.onResolve}
         />
       )}
@@ -4418,14 +5149,40 @@ function TextileSalesApp({ currentUsername, users, onSetUsers, onSignOut }) {
           : customers;
         const summaryList = [...scope].sort((a, b) => customerOutstanding(b.id) - customerOutstanding(a.id));
         const ledgerList = [...scope].sort((a, b) => a.name.localeCompare(b.name));
-        // Landscape 2-up summary rows (same format as vendor balance summary).
+        // Landscape 2-up summary rows. Name and address share one column so
+        // the last-sale columns fit without the sheet overflowing.
+        const lastSaleBy = new Map();
+        for (const inv of invoices) {
+          const prev = lastSaleBy.get(inv.customerId);
+          if (!prev || inv.date > prev) lastSaleBy.set(inv.customerId, inv.date);
+        }
+        const daysSince = (d) => {
+          if (!d) return null;
+          return Math.max(0, Math.round((new Date(`${todayISO()}T12:00:00`) - new Date(`${d}T12:00:00`)) / 86400000));
+        };
         const sumRows = summaryList.map((c, i) => {
           const bal = customerOutstanding(c.id);
-          return [i + 1, c.name, c.phone1 || "—", c.address || "—", `${fmtNum(Math.abs(bal))} ${bal >= 0 ? "DR" : "CR"}`];
+          const last = lastSaleBy.get(c.id);
+          const days = daysSince(last);
+          return [
+            i + 1,
+            c.address ? `${c.name} — ${c.address}` : c.name,
+            c.phone1 || "—",
+            `${fmtNum(Math.abs(bal))} ${bal >= 0 ? "DR" : "CR"}`,
+            last ? fmtDate(last) : "—",
+            days === null ? "—" : String(days),
+          ];
         });
-        const sumCols = [{ header: "SN", align: "center" }, { header: "Customer", width: 200 }, { header: "Phone" }, { header: "Address" }, { header: "Balance", align: "right" }];
+        const sumCols = [
+          { header: "SN", align: "center" },
+          { header: "Customer Details", width: 230 },
+          { header: "Phone" },
+          { header: "Balance", align: "right" },
+          { header: "Last Sale", align: "center" },
+          { header: "Days", align: "center" },
+        ];
         const sumTotal = summaryList.reduce((s, c) => s + Math.max(0, customerOutstanding(c.id)), 0);
-        const sumFoot = ["", "", "", "Total Receivable", fmtNum(sumTotal)];
+        const sumFoot = ["", "", "", fmtNum(sumTotal), "", "Total Receivable"];
         const sumSubtitle = `${summaryList.length} customer${summaryList.length !== 1 ? "s" : ""}${custSelected.length ? " · selected only" : ""} · as on ${fmtDate(todayISO())}`;
         return (
           <>
@@ -4570,7 +5327,7 @@ function ListView({
   printSeparate, setPrintSeparate, onPrintRegister, onPreviewRegister, onExport, onImport, onExportCsv, onExportFullCsv, onImportCsv, onImportQr,
   onNew, onEdit, onOpenDetail, onPrint, onPreview, onToggleStatus, pendingDelete, setPendingDelete, onDelete, invoiceTotal,
   srnoMap, dateSortDir, onToggleDateSort, selected, onToggleSelect, onToggleSelectAll, onBulkSetStatus, onBulkDelete,
-  bulkDeleteConfirm, setBulkDeleteConfirm, onBulkAddReceipts,
+  bulkDeleteConfirm, setBulkDeleteConfirm, onBulkAddReceipts, bankAccounts = [],
 }) {
   const customerById = useMemo(() => {
     const m = new Map();
@@ -4993,6 +5750,7 @@ function ListView({
         <BulkInvoiceReceiptModal
           invoices={invoices.filter((i) => selected.includes(i.id))}
           customers={customers}
+          bankAccounts={bankAccounts}
           receipts={receipts || []}
           invoiceTotal={invoiceTotal}
           onClose={() => setBulkReceiptModal(false)}
@@ -5026,19 +5784,6 @@ function SummaryCard({ label, value, color, mono }) {
   );
 }
 
-function IconBtn({ children, onClick, title, danger }) {
-  return (
-    <button
-      onClick={onClick}
-      title={title}
-      className="flex items-center justify-center rounded-md"
-      style={{ width: 30, height: 30, color: danger ? "#B5482F" : inkSoft, background: "transparent" }}
-      onMouseDown={(e) => e.preventDefault()}
-    >
-      {children}
-    </button>
-  );
-}
 
 // ================= FORM VIEW =================
 // ============ PRINT PREVIEW SYSTEM ============
@@ -5313,7 +6058,7 @@ function SizeSummary({ items }) {
   const rows = UNIT_OPTIONS.map((u) => {
     let qty = 0, totQty = 0, amount = 0;
     for (const it of items) {
-      if (it.unit !== u) continue;
+      if (it.unit !== u || isCancelledItem(it)) continue;
       const q = Number(it.qty) || 0;
       qty += q;
       totQty += isCountUnit(u) ? q : q * (Number(it.size) || 0);
@@ -5371,7 +6116,7 @@ function SizeSummary({ items }) {
 }
 
 // ================= DETAIL VIEW (read-only invoice) =================
-function DetailView({ invoice, customer, invoices, receipts = [], invoiceTotal, onBack, onEdit, onPreview, onPrint, onAddReceipt, onEditReceipt, onOpenInvoice }) {
+function DetailView({ invoice, customer, invoices, receipts = [], invoiceTotal, onBack, onEdit, onPreview, onPrint, onAddReceipt, onEditReceipt, onOpenInvoice, onToggleItemCancel, onShippingLabel }) {
   if (!invoice) {
     return (
       <div className="text-center py-16">
@@ -5455,6 +6200,18 @@ function DetailView({ invoice, customer, invoices, receipts = [], invoiceTotal, 
         )}
       </div>
 
+      {onShippingLabel && (
+        <div className="flex mb-4">
+          <button
+            onClick={() => onShippingLabel(invoice)}
+            className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold"
+            style={{ background: card, border: `1px solid ${hairline}`, color: ink }}
+          >
+            <Printer size={15} /> Prepare Shipping Label
+          </button>
+        </div>
+      )}
+
       {/* Bill To */}
       <Section title="Bill To">
         <div style={{ color: ink, fontWeight: 700, fontSize: 18 }}>{customer?.name || "—"}</div>
@@ -5464,6 +6221,14 @@ function DetailView({ invoice, customer, invoices, receipts = [], invoiceTotal, 
             {[customer.phone1, customer.phone2].filter(Boolean).map((ph, i) => (
               <a key={i} href={`tel:${String(ph).replace(/[^\d+]/g, "")}`} style={{ color: inkSoft, marginRight: 10 }}>{ph}</a>
             ))}
+          </div>
+        )}
+        {customer?.transporter && (
+          // Screen-only: useful when despatching, but deliberately kept off
+          // the shipping label and every printed document.
+          <div style={{ marginTop: 6, fontSize: 12.5 }}>
+            <span style={{ color: muted }}>Transport: </span>
+            <span style={{ color: inkSoft, fontWeight: 600 }}>{customer.transporter}</span>
           </div>
         )}
       </Section>
@@ -5485,32 +6250,91 @@ function DetailView({ invoice, customer, invoices, receipts = [], invoiceTotal, 
             <span style={{ color: muted }}>Series</span>
             <span style={{ color: ink }}>{invoice.series}</span>
           </div>
+          {invoice.createdAt && (
+            // On-screen only — the printed invoice and PDF deliberately
+            // don't carry this, since it's an internal audit detail rather
+            // than something the customer needs. Same format as the
+            // Transactions tab.
+            <div className="flex justify-between">
+              <span style={{ color: muted }}>Created</span>
+              <span style={{ color: muted, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>
+                {fmtDateTime(invoice.createdAt)}
+              </span>
+            </div>
+          )}
         </div>
       </Section>
 
       {/* Items table */}
       <div className="rounded-xl overflow-hidden mb-4" style={{ background: card, border: `1px solid ${hairline}` }}>
-        <div className="grid px-3 py-2 text-xs font-semibold" style={{ gridTemplateColumns: "28px 1fr 56px 56px 72px 88px", color: inkSoft, background: paper, borderBottom: `1px solid ${hairline}` }}>
+        <div className="grid px-3 py-2 text-xs font-semibold" style={{ gridTemplateColumns: onToggleItemCancel ? "28px 1fr 54px 54px 70px 86px 30px" : "28px 1fr 56px 56px 72px 88px", color: inkSoft, background: paper, borderBottom: `1px solid ${hairline}` }}>
           <span>#</span><span>Type</span>
           <span style={{ textAlign: "right" }}>Qty</span>
           <span style={{ textAlign: "right" }}>Size</span>
           <span style={{ textAlign: "right" }}>Rate</span>
           <span style={{ textAlign: "right" }}>Amount</span>
+          {onToggleItemCancel && <span></span>}
         </div>
-        {invoice.items.map((it, i) => (
-          <div
-            key={it.id}
-            className="grid px-3 py-2 text-sm items-center"
-            style={{ gridTemplateColumns: "28px 1fr 56px 56px 72px 88px", borderTop: i > 0 ? `1px solid ${hairline}` : "none" }}
-          >
-            <span style={{ color: muted, fontSize: 12 }}>{i + 1}</span>
-            <span style={{ color: ink, fontWeight: 600 }}>{unitAbbr(it.unit)}</span>
-            <span style={{ textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{it.qty}</span>
-            <span style={{ textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{isCountUnit(it.unit) ? "—" : it.size}</span>
-            <span style={{ textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{fmtMoney(it.rate)}</span>
-            <span style={{ textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>{fmtMoney(lineAmount(it))}</span>
-          </div>
-        ))}
+        {invoice.items.map((it, i) => {
+          const off = isCancelledItem(it);
+          // Struck through and dimmed, but the row (and its Sr number) stays
+          // exactly where it was.
+          const dim = { color: off ? muted : ink, textDecoration: off ? "line-through" : "none" };
+          return (
+            <div
+              key={it.id}
+              className="grid px-3 py-2 text-sm items-center"
+              style={{
+                gridTemplateColumns: onToggleItemCancel ? "28px 1fr 54px 54px 70px 86px 30px" : "28px 1fr 56px 56px 72px 88px",
+                borderTop: i > 0 ? `1px solid ${hairline}` : "none",
+                background: off ? "#FAF8F4" : "transparent",
+              }}
+            >
+              <span style={{ color: muted, fontSize: 12 }}>{i + 1}</span>
+              <span style={{ ...dim, fontWeight: 600 }}>
+                {unitAbbr(it.unit)}
+                {off && (
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                    <span style={{ color: danger, fontSize: 9, fontWeight: 700, textDecoration: "none", letterSpacing: "0.04em" }}>CANCELLED</span>
+                    {onToggleItemCancel && (
+                      <button
+                        onClick={() => onToggleItemCancel(invoice, it.id)}
+                        className="rounded"
+                        style={{ color: success, border: `1px solid ${success}`, background: "#fff", fontSize: 9.5, fontWeight: 700, padding: "1px 6px", textDecoration: "none", letterSpacing: "0.03em", lineHeight: 1.5, whiteSpace: "nowrap" }}
+                        title="Restore this line"
+                      >
+                        UNDO
+                      </button>
+                    )}
+                  </span>
+                )}
+              </span>
+              <span style={{ ...dim, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{it.qty}</span>
+              <span style={{ ...dim, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{isCountUnit(it.unit) ? "—" : it.size}</span>
+              <span style={{ ...dim, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" }}>{fmtMoney(it.rate)}</span>
+              <span style={{ ...dim, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 600 }}>
+                {off ? "—" : fmtMoney(lineAmount(it))}
+              </span>
+              {onToggleItemCancel && (
+                // Restore is a labelled button rather than an icon: a small
+                // arrow reads as ambiguous next to the ✕, and undoing an
+                // accidental cancel needs to be obvious.
+                off ? (
+                  <span />
+                ) : (
+                  <button
+                    onClick={() => onToggleItemCancel(invoice, it.id)}
+                    className="flex items-center justify-center"
+                    style={{ color: muted, width: 26, height: 26, justifySelf: "end" }}
+                    title="Cancel this line — keeps the Sr numbers of the other lines unchanged"
+                  >
+                    <X size={14} />
+                  </button>
+                )
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Expenses + totals */}
@@ -6123,16 +6947,6 @@ function QrImportModal({ onClose, onConfirm }) {
   );
 }
 
-function Section({ title, children }) {
-  return (
-    <div className="rounded-xl p-4 mb-4" style={{ background: card, border: `1px solid ${hairline}` }}>
-      <div style={{ color: inkSoft, fontSize: 11, fontWeight: 700, letterSpacing: "0.06em", marginBottom: 12 }}>
-        {title.toUpperCase()}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 // Renders an invoice's QR code (dynamically imports the `qrcode` library so
 // it's not in the main bundle for people who never open this panel). Shows
@@ -6196,182 +7010,11 @@ function InvoiceQrPanel({ invoice, customerName }) {
 // A compact inline dropdown (replaces native <select>). options: [{value,label}]
 // or plain strings. Renders the selected label with a chevron; opens a styled
 // list on click. Closes on outside-click or selection.
-function InlineSelect({ value, options, onChange, className, style, placeholder = "Select", disabled = false }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef(null);
-  const opts = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
-  const selected = opts.find((o) => o.value === value);
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
-  return (
-    <div ref={wrapRef} style={{ position: "relative", width: "100%" }}>
-      <button
-        type="button"
-        onClick={() => { if (!disabled) setOpen((o) => !o); }}
-        disabled={disabled}
-        className={className}
-        style={{ ...style, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6, textAlign: "left", cursor: disabled ? "not-allowed" : "pointer", width: "100%" }}
-      >
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: selected ? ink : muted }}>
-          {selected ? selected.label : placeholder}
-        </span>
-        <ChevronDown size={16} color={muted} style={{ flexShrink: 0 }} />
-      </button>
-      {open && !disabled && (
-        <div
-          style={{
-            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 50,
-            background: "#fff", border: `1px solid ${hairline}`, borderRadius: 10,
-            boxShadow: "0 8px 24px rgba(30,42,68,0.14)", maxHeight: 260, overflowY: "auto",
-          }}
-        >
-          {opts.map((o) => (
-            <button
-              key={o.value}
-              type="button"
-              onClick={() => { onChange(o.value); setOpen(false); }}
-              className="w-full text-left px-3 py-2"
-              style={{ background: o.value === value ? "#FBF4E7" : "transparent", color: ink, fontSize: 13.5, fontWeight: o.value === value ? 600 : 400, borderBottom: `1px solid ${hairline}` }}
-            >
-              {o.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
-function SearchableSelect({ value, options, onChange, placeholder = "Select…", inputStyle, className }) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const wrapRef = useRef(null);
-  const selectedLabel = options.find((o) => o.value === value)?.label || "";
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e) => { if (wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); setQuery(""); } };
-    document.addEventListener("mousedown", onDoc);
-    return () => document.removeEventListener("mousedown", onDoc);
-  }, [open]);
-
-  const filtered = query.trim()
-    ? options.filter((o) => o.label.toLowerCase().includes(query.trim().toLowerCase()) || (o.sub || "").toLowerCase().includes(query.trim().toLowerCase()))
-    : options;
-
-  const pick = (v) => { onChange(v); setOpen(false); setQuery(""); };
-
-  return (
-    <div ref={wrapRef} style={{ position: "relative", flex: 1, minWidth: 0 }}>
-      <input
-        type="text"
-        value={open ? query : selectedLabel}
-        placeholder={selectedLabel || placeholder}
-        onFocus={() => setOpen(true)}
-        onClick={() => setOpen(true)}
-        onChange={(e) => { setQuery(e.target.value); if (!open) setOpen(true); }}
-        className={className || "w-full px-3 py-2.5 rounded-lg text-sm outline-none"}
-        style={{ ...inputStyle, width: "100%", boxSizing: "border-box", paddingRight: 30, color: selectedLabel && !open ? ink : undefined }}
-      />
-      <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", color: muted, pointerEvents: "none" }}>
-        <ChevronDown size={16} />
-      </span>
-      {open && (
-        <div
-          style={{
-            position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 40,
-            background: "#fff", border: `1px solid ${hairline}`, borderRadius: 10,
-            boxShadow: "0 8px 24px rgba(30,42,68,0.14)", maxHeight: 260, overflowY: "auto",
-          }}
-        >
-          {filtered.length === 0 ? (
-            <div style={{ padding: "10px 12px", color: muted, fontSize: 13 }}>No matches</div>
-          ) : (
-            filtered.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                onClick={() => pick(o.value)}
-                className="w-full text-left px-3 py-2"
-                style={{
-                  background: o.value === value ? "#FBF4E7" : "transparent",
-                  borderBottom: `1px solid ${hairline}`,
-                }}
-              >
-                <div style={{ color: ink, fontSize: 13.5, fontWeight: 600 }}>{o.label}</div>
-                {o.sub ? <div style={{ color: muted, fontSize: 11 }}>{o.sub}</div> : null}
-              </button>
-            ))
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
 
 // A date input that always DISPLAYS dd/mm/yyyy (regardless of device locale),
 // while storing the value as YYYY-MM-DD. A small calendar button opens the
 // native picker for convenience; typing accepts dd/mm/yyyy or dd-mm-yyyy.
-function DateField({ value, onChange, className, style, placeholder = "dd/mm/yy" }) {
-  const [text, setText] = useState(value ? fmtDateShort(value) : "");
-  useEffect(() => { setText(value ? fmtDateShort(value) : ""); }, [value]);
-  const nativeRef = useRef(null);
-  // On a touch device the little calendar icon is a poor tap target, and a
-  // tap on a date field nearly always means "show me a calendar" — so the
-  // whole field opens the native picker (a full-size transparent date input
-  // laid over it, which is far more reliable on iOS than calling
-  // showPicker()). On mouse/desktop the field stays a text box you can type
-  // into — much faster for backdating — with the icon as the calendar
-  // affordance, so nothing is lost there.
-  const touchFirst = typeof window !== "undefined" && !!window.matchMedia?.("(pointer: coarse)")?.matches;
-  const commit = (raw) => {
-    const s = (raw || "").trim();
-    if (!s) { onChange(""); return; }
-    const iso = normalizeDate(s);
-    if (iso) onChange(iso);
-    else setText(value ? fmtDateShort(value) : ""); // revert if unparseable
-  };
-  return (
-    <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
-      <input
-        type="text"
-        inputMode="numeric"
-        value={text}
-        placeholder={placeholder}
-        onChange={(e) => setText(e.target.value)}
-        onBlur={(e) => commit(e.target.value)}
-        onKeyDown={(e) => { if (e.key === "Enter") commit(e.target.value); }}
-        readOnly={touchFirst}
-        className={className}
-        style={{ ...style, width: "100%", boxSizing: "border-box", paddingRight: 30 }}
-      />
-      <button
-        type="button"
-        onClick={() => { if (nativeRef.current?.showPicker) nativeRef.current.showPicker(); else nativeRef.current?.focus(); }}
-        style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", display: "flex", alignItems: "center", color: muted, background: "transparent", padding: 0 }}
-        tabIndex={-1}
-        aria-label="Open calendar"
-      >
-        <CalendarIcon size={15} />
-      </button>
-      <input
-        ref={nativeRef}
-        type="date"
-        value={value || ""}
-        onChange={(e) => onChange(e.target.value)}
-        style={touchFirst
-          ? { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer" }
-          : { position: "absolute", right: 4, top: 0, width: 22, height: "100%", opacity: 0, pointerEvents: "none" }}
-        tabIndex={-1}
-        aria-label="Pick a date"
-      />
-    </div>
-  );
-}
 
 function Field({ label, children }) {
   return (
@@ -6434,9 +7077,6 @@ const PAYMENT_MODES = ["Cash", "Bank", "Cheque", "Discount", "Purchase Return"];
 // "Cash/Bank" label for a receipt: the bank account's own name (e.g. "BOB765")
 // when paid via Bank, since that's the only receipt mode that currently
 // collects a linked bank account — otherwise just the mode itself.
-function receiptAccountLabel(r) {
-  return r.mode === "Bank" ? (r.bankName || "Bank") : r.mode;
-}
 // Same for a payment: Bank, Cheque, and UPI payments can all be linked to a
 // bank account (unlike receipts, where only Bank mode does), so any mode in
 // that group resolves to the account name when one was set. Discount and
@@ -6444,10 +7084,6 @@ function receiptAccountLabel(r) {
 // just show the mode itself — even if a bank name is still sitting in the
 // record from before the mode was switched (see PaymentModal, which now
 // clears it when you switch away from a bank-eligible mode).
-function paymentAccountLabel(p) {
-  const bankEligible = p.mode === "Bank" || p.mode === "Cheque";
-  return bankEligible ? (p.bankName || p.mode) : (p.mode || "Cash");
-}
 
 function ReceiptsView({ receipts, customers, invoices, onAdd, onEdit, onDelete, onBulkDelete, dateFrom, dateTo, setDateFrom, setDateTo, quickRangeDates, onPreviewRegister, onExportCsv, onImportCsv, onManageBanks }) {
   const importRef = useRef(null);
@@ -6745,17 +7381,49 @@ function ReceiptsView({ receipts, customers, invoices, onAdd, onEdit, onDelete, 
   );
 }
 
-function ImportDuplicateModal({ label, newCount, dupCount, onResolve }) {
+// `dupNames` is optional — the plain CSV importers only pass counts, so this
+// stays exactly as before for them. Only callers that can name the actual
+// duplicates (currently the Tally import) get the "Exceptions" button.
+function ImportDuplicateModal({ label, newCount, dupCount, dupNames, onResolve }) {
+  const [showList, setShowList] = useState(false);
   return (
     <div className="no-print fixed inset-0 flex items-center justify-center px-4 py-8" style={{ background: "rgba(30,42,68,0.45)", zIndex: 60 }}>
-      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: "#fff" }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: "#fff", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
         <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 18, fontWeight: 600, marginBottom: 8 }}>
           Duplicate {label}{dupCount !== 1 ? "s" : ""} found
         </h3>
-        <p style={{ color: muted, fontSize: 13.5, lineHeight: 1.5, marginBottom: 16 }}>
+        <p style={{ color: muted, fontSize: 13.5, lineHeight: 1.5, marginBottom: 12 }}>
           {dupCount} {label}{dupCount !== 1 ? "s" : ""} in this file already exist{dupCount === 1 ? "s" : ""}.
           {newCount > 0 ? ` ${newCount} new ${label}${newCount !== 1 ? "s" : ""} will be added either way.` : ""} How should the duplicates be handled?
         </p>
+
+        {dupNames?.length > 0 && (
+          <div className="mb-3">
+            <button
+              onClick={() => setShowList((v) => !v)}
+              className="flex items-center gap-1 text-sm font-semibold"
+              style={{ color: thread }}
+            >
+              {showList ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+              Exceptions — see which {dupCount !== 1 ? "ones" : "one"}
+            </button>
+            {showList && (
+              <div className="mt-2 rounded-lg" style={{ border: `1px solid ${hairline}`, maxHeight: 180, overflowY: "auto" }}>
+                {dupNames.map((d, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center justify-between px-3 py-1.5"
+                    style={{ borderTop: i > 0 ? `1px solid ${hairline}` : "none", fontSize: 12.5 }}
+                  >
+                    <span style={{ color: ink }}>{d.name}</span>
+                    <span style={{ color: muted, fontSize: 11 }}>{d.kind}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="space-y-2">
           <button
             onClick={() => onResolve("replace")}
@@ -6912,7 +7580,7 @@ function ReceiptModal({ customers, invoices, bankAccounts = [], invoiceTotal, va
           {form.customerId && customerOutstanding && (() => {
             const bal = customerOutstanding(form.customerId);
             return (
-              <div className="flex justify-end" style={{ marginTop: -4, marginBottom: 2 }}>
+              <div className="flex justify-end" style={{ marginTop: 2, marginBottom: 4 }}>
                 <span style={{ color: muted, fontSize: 11.5 }}>
                   Balance:{" "}
                   <b style={{ color: bal > 0 ? success : bal < 0 ? danger : ink, fontFamily: "'IBM Plex Mono', monospace" }}>
@@ -7148,7 +7816,165 @@ const ACCOUNT_HEADER_LABEL = {
 const accountHeaderLabel = (type) => ACCOUNT_HEADER_LABEL[type] || type;
 
 
-function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], onImportCustomers, onDeleteAccounts }) {
+// Manage the units of measurement offered on invoice and purchase line
+// items. A unit already used on a saved document can't be deleted, since
+// that would leave those line items pointing at a unit that no longer
+// exists — rename is offered instead, which rewrites them in place.
+function UnitsView({ units, invoices, purchases, onSave }) {
+  const [modal, setModal] = useState(null); // null | {} (new) | unit (edit)
+  const [pendingDelete, setPendingDelete] = useState(null);
+
+  // How many saved line items reference each unit — drives the "in use"
+  // count and blocks deletion.
+  const usage = useMemo(() => {
+    const m = new Map();
+    const bump = (u) => m.set(u, (m.get(u) || 0) + 1);
+    for (const inv of invoices || []) for (const it of inv.items || []) if (it.unit) bump(it.unit);
+    for (const p of purchases || []) for (const it of p.items || []) if (it.unit) bump(it.unit);
+    return m;
+  }, [invoices, purchases]);
+
+  function saveUnit(data) {
+    const name = data.name.trim();
+    const abbr = (data.abbr || "").trim() || name;
+    if (!name) return;
+    const clash = units.some((u) => u.name.toLowerCase() === name.toLowerCase() && u.id !== data.id);
+    if (clash) return; // guarded in the modal too
+    if (data.id) {
+      const prev = units.find((u) => u.id === data.id);
+      onSave(units.map((u) => (u.id === data.id ? { ...u, name, abbr, count: !!data.count } : u)), prev?.name, name);
+    } else {
+      onSave([...units, { id: uid(), name, abbr, count: !!data.count }]);
+    }
+    setModal(null);
+  }
+
+  return (
+    <div className="rounded-xl p-5 mb-4" style={{ background: card, border: `1px solid ${hairline}` }}>
+      <div className="flex items-start justify-between gap-3 flex-wrap mb-3">
+        <div>
+          <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 17, fontWeight: 600 }}>Units of Measurement</h3>
+          <p style={{ color: muted, fontSize: 13, lineHeight: 1.5, marginTop: 2 }}>
+            Units offered on invoice and purchase line items. A “counted” unit (like Pcs) has no size — its amount is quantity × rate.
+          </p>
+        </div>
+        <button onClick={() => setModal({})} className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold whitespace-nowrap" style={{ background: thread, color: ink }}>
+          <Plus size={15} /> Add Unit
+        </button>
+      </div>
+
+      <div className="rounded-lg overflow-hidden" style={{ border: `1px solid ${hairline}` }}>
+        <div className="grid items-center gap-2 px-3 py-2" style={{ gridTemplateColumns: "minmax(0,1fr) 70px 62px 60px", background: paper, borderBottom: `1px solid ${hairline}` }}>
+          <span style={{ color: muted, fontSize: 11, fontWeight: 700 }}>UNIT</span>
+          <span style={{ color: muted, fontSize: 11, fontWeight: 700 }}>SHORT</span>
+          <span style={{ color: muted, fontSize: 11, fontWeight: 700, textAlign: "center" }}>SIZE</span>
+          <span style={{ color: muted, fontSize: 11, fontWeight: 700, textAlign: "right" }}>ACTIONS</span>
+        </div>
+        {units.map((u, idx) => {
+          const used = usage.get(u.name) || 0;
+          return (
+            <div key={u.id} className="grid items-center gap-2 px-3 py-2.5" style={{ gridTemplateColumns: "minmax(0,1fr) 70px 62px 60px", borderTop: idx > 0 ? `1px solid ${hairline}` : "none" }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ color: ink, fontWeight: 600, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{u.name}</div>
+                <div style={{ color: muted, fontSize: 11 }}>{used > 0 ? `used on ${used} line item${used !== 1 ? "s" : ""}` : "not used yet"}</div>
+              </div>
+              <span style={{ color: inkSoft, fontSize: 12.5, fontFamily: "'IBM Plex Mono', monospace" }}>{u.abbr || u.name}</span>
+              <span style={{ textAlign: "center", fontSize: 11, fontWeight: 700, color: u.count ? muted : success }}>{u.count ? "—" : "YES"}</span>
+              <div className="flex items-center justify-end gap-1">
+                <button onClick={() => setModal(u)} className="flex items-center justify-center rounded-lg" style={{ width: 28, height: 28, color: inkSoft }} title="Edit">
+                  <Edit2 size={14} />
+                </button>
+                {pendingDelete === u.id ? (
+                  <button onClick={() => { onSave(units.filter((x) => x.id !== u.id)); setPendingDelete(null); }} className="text-xs font-bold" style={{ color: danger }}>Sure?</button>
+                ) : (
+                  <button
+                    onClick={() => used === 0 && units.length > 1 && setPendingDelete(u.id)}
+                    disabled={used > 0 || units.length <= 1}
+                    className="flex items-center justify-center rounded-lg"
+                    style={{ width: 28, height: 28, color: (used > 0 || units.length <= 1) ? hairline : danger, cursor: (used > 0 || units.length <= 1) ? "not-allowed" : "pointer" }}
+                    title={used > 0 ? "In use on saved documents — rename it instead" : units.length <= 1 ? "At least one unit is required" : "Delete"}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {modal && (
+        <UnitModal
+          value={modal.id ? modal : null}
+          existing={units}
+          inUse={modal.id ? (usage.get(modal.name) || 0) : 0}
+          onClose={() => setModal(null)}
+          onSave={saveUnit}
+        />
+      )}
+    </div>
+  );
+}
+
+function UnitModal({ value, existing, inUse, onClose, onSave }) {
+  const [name, setName] = useState(value?.name || "");
+  const [abbr, setAbbr] = useState(value?.abbr || "");
+  const [count, setCount] = useState(!!value?.count);
+  const [error, setError] = useState("");
+
+  function handleSave() {
+    const n = name.trim();
+    if (!n) { setError("Enter a unit name."); return; }
+    if (existing.some((u) => u.name.toLowerCase() === n.toLowerCase() && u.id !== value?.id)) {
+      setError("A unit with that name already exists."); return;
+    }
+    onSave({ id: value?.id, name: n, abbr: abbr.trim(), count });
+  }
+
+  return (
+    <div className="no-print fixed inset-0 flex items-center justify-center px-4 py-8" style={{ background: "rgba(30,42,68,0.45)", zIndex: 60 }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: "#fff" }}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 20, fontWeight: 600 }}>{value ? "Edit Unit" : "Add Unit"}</h3>
+          <button onClick={onClose}><X size={20} color={muted} /></button>
+        </div>
+        {error && (
+          <div style={{ background: dangerBg, color: danger, fontSize: 12.5, padding: "8px 10px", borderRadius: 8, marginBottom: 12 }}>{error}</div>
+        )}
+        {inUse > 0 && (
+          <div style={{ background: "#FBF4E7", color: "#8A6416", fontSize: 12, padding: "8px 10px", borderRadius: 8, marginBottom: 12, lineHeight: 1.45 }}>
+            In use on {inUse} saved line item{inUse !== 1 ? "s" : ""}. Renaming updates them all; changing “has size” only affects how amounts are calculated from now on.
+          </div>
+        )}
+        <div className="space-y-2.5">
+          <InlineRow label="Name">
+            <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} style={inputStyle} autoFocus placeholder="e.g. Thaan" />
+          </InlineRow>
+          <InlineRow label="Short">
+            <input value={abbr} onChange={(e) => setAbbr(e.target.value)} className={inputCls} style={inputStyle} placeholder="for print — defaults to name" />
+          </InlineRow>
+        </div>
+        <label className="flex items-start gap-2 mt-3" style={{ cursor: "pointer" }}>
+          <input type="checkbox" checked={!count} onChange={(e) => setCount(!e.target.checked)} style={{ width: 15, height: 15, accentColor: thread, marginTop: 2 }} />
+          <span style={{ color: inkSoft, fontSize: 13, lineHeight: 1.4 }}>
+            Has a size
+            <span style={{ color: muted, display: "block", fontSize: 11.5 }}>
+              On = amount is qty × size × rate (like Yards). Off = qty × rate only, size disabled (like Pcs).
+            </span>
+          </span>
+        </label>
+        <div className="flex gap-2 mt-4">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-lg text-sm font-semibold" style={{ border: `1px solid ${hairline}`, color: muted }}>Cancel</button>
+          <button onClick={handleSave} className="flex-1 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1" style={{ background: thread, color: ink }}>
+            <Check size={16} /> {value ? "Save Changes" : "Add Unit"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], units = [], invoices = [], purchases = [], onSaveUnits, onImportCustomers, onImportTally, onDeleteAccounts }) {
   const [bulkConfirm, setBulkConfirm] = useState(false);
   const [q, setQ] = useState("");
   const [headerFilter, setHeaderFilter] = useState("all"); // all | Customer | Bank | System
@@ -7157,10 +7983,12 @@ function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], onImp
   const [sortField, setSortField] = useState("created"); // created | name | header
   const [sortDir, setSortDir] = useState("desc"); // newest first by default
   const importRef = useRef(null);
+  const tallyImportRef = useRef(null);
 
   const allRows = [
     ...customers.map((c) => ({
       name: c.name, type: "Customer", address: c.address || "", phone: c.phone1 || "", phone2: c.phone2 || "",
+      shipAddress: c.shipAddress || "", shipCity: c.shipCity || "", shipState: c.shipState || "", shipPin: c.shipPin || "",
       email: c.email || "", openingBalance: c.openingBalance || "", balanceType: c.openingBalanceType || "Dr",
       openingBalanceDate: c.openingBalanceDate || "", bankName: "", accountNumber: "", ifsc: "", notes: "",
       createdAt: c.createdAt || 0,
@@ -7246,6 +8074,10 @@ function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], onImp
 
   return (
     <div>
+      {onSaveUnits && (
+        <UnitsView units={units} invoices={invoices} purchases={purchases} onSave={onSaveUnits} />
+      )}
+
       <div className="flex items-start justify-between flex-wrap gap-3 mb-5">
         <div>
           <h1 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 28, fontWeight: 600 }}>Chart of Accounts</h1>
@@ -7259,6 +8091,15 @@ function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], onImp
             className="hidden"
             onChange={(e) => { if (e.target.files?.[0]) onImportCustomers(e.target.files[0]); e.target.value = ""; }}
           />
+          {onImportTally && (
+            <input
+              ref={tallyImportRef}
+              type="file"
+              accept=".xml,text/xml"
+              className="hidden"
+              onChange={(e) => { if (e.target.files?.[0]) onImportTally(e.target.files[0]); e.target.value = ""; }}
+            />
+          )}
           <button
             onClick={() => setPreview(true)}
             className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-semibold text-xs"
@@ -7275,6 +8116,16 @@ function ChartOfAccountsView({ customers, bankAccounts = [], vendors = [], onImp
           >
             <Upload size={14} /> CSV
           </button>
+          {onImportTally && (
+            <button
+              onClick={() => tallyImportRef.current?.click()}
+              className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-semibold text-xs"
+              style={{ background: card, border: `1px solid ${hairline}`, color: inkSoft }}
+              title="Import party ledgers with opening balances from a Tally masters XML export"
+            >
+              <Upload size={14} /> Tally
+            </button>
+          )}
           <button
             onClick={exportCsv}
             className="flex items-center gap-1 px-3 py-2.5 rounded-lg font-semibold text-xs"
@@ -7628,7 +8479,7 @@ function VendorModal({ value, onClose, onSave }) {
 }
 
 // ===================== PURCHASES (simple bills) =====================
-function PurchasesView({ purchases, vendors, payments, counters, setCounters, onAdd, onDelete, onBulkDelete, onImportCsv, quickRangeDates, onOpenDetail, onToggleStatus, onBulkAddPayments, fyWindow }) {
+function PurchasesView({ purchases, vendors, payments, bankAccounts = [], counters, setCounters, onAdd, onDelete, onBulkDelete, onImportCsv, quickRangeDates, onOpenDetail, onToggleStatus, onBulkAddPayments, fyWindow }) {
   const [from, setFrom] = useState(currentMonthDates().from);
   const [to, setTo] = useState(currentMonthDates().to);
 
@@ -7890,6 +8741,7 @@ function PurchasesView({ purchases, vendors, payments, counters, setCounters, on
         <BulkPurchasePaymentModal
           purchases={purchases.filter((p) => selected.includes(p.id))}
           vendors={vendors}
+          bankAccounts={bankAccounts}
           payments={payments || []}
           onClose={() => setBulkPaymentModal(false)}
           onSave={(entries) => {
@@ -8256,6 +9108,14 @@ function PurchaseDetailView({ purchase, vendors, payments = [], onBack, onUpdate
             <span style={{ color: muted }}>Date</span>
             <span style={{ color: ink }}>{fmtDate(purchase.date)}</span>
           </div>
+          {purchase.createdAt && (
+            <div className="flex justify-between">
+              <span style={{ color: muted }}>Created</span>
+              <span style={{ color: muted, fontFamily: "'IBM Plex Mono', monospace", fontSize: 12.5 }}>
+                {fmtDateTime(purchase.createdAt)}
+              </span>
+            </div>
+          )}
           {purchase.notes && (
             <div className="flex justify-between gap-4">
               <span style={{ color: muted }}>Notes</span>
@@ -8271,6 +9131,7 @@ function PurchaseDetailView({ purchase, vendors, payments = [], onBack, onUpdate
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 420 }}>
             <thead>
               <tr style={{ background: paper }}>
+                <th style={{ padding: "6px 8px", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", color: muted, textAlign: "left", borderBottom: `1px solid ${hairline}`, width: 34 }}>#</th>
                 <th style={{ padding: "6px 8px", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", color: muted, textAlign: "left", borderBottom: `1px solid ${hairline}` }}>TYPE</th>
                 <th style={{ padding: "6px 8px", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", color: muted, textAlign: "right", borderBottom: `1px solid ${hairline}` }}>QTY</th>
                 <th style={{ padding: "6px 8px", fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", color: muted, textAlign: "right", borderBottom: `1px solid ${hairline}` }}>SIZE</th>
@@ -8281,7 +9142,7 @@ function PurchaseDetailView({ purchase, vendors, payments = [], onBack, onUpdate
             <tbody>
               {displayItems.length === 0 ? (
                 <tr>
-                  <td colSpan={5} style={{ padding: "16px 8px", fontSize: 13, color: muted, textAlign: "center", borderBottom: `1px solid ${hairline}` }}>No line items.</td>
+                  <td colSpan={6} style={{ padding: "16px 8px", fontSize: 13, color: muted, textAlign: "center", borderBottom: `1px solid ${hairline}` }}>No line items.</td>
                 </tr>
               ) : (
                 displayItems.map((it, i) => {
@@ -8293,6 +9154,7 @@ function PurchaseDetailView({ purchase, vendors, payments = [], onBack, onUpdate
                   const hasLineDetail = qty > 0 && rate > 0;
                   return (
                     <tr key={it.id || i}>
+                      <td style={{ padding: "8px", fontSize: 12, color: muted, borderBottom: `1px solid ${hairline}`, fontFamily: "'IBM Plex Mono', monospace" }}>{i + 1}</td>
                       <td style={{ padding: "8px", fontSize: 13, color: ink, borderBottom: `1px solid ${hairline}` }}>{it.unit || "—"}</td>
                       <td style={{ padding: "8px", fontSize: 13, color: ink, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", borderBottom: `1px solid ${hairline}` }}>{hasLineDetail ? qty : "—"}</td>
                       <td style={{ padding: "8px", fontSize: 13, color: ink, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", borderBottom: `1px solid ${hairline}` }}>{hasLineDetail ? (isPcs ? "—" : `${size} ${unitAbbr}`) : "—"}</td>
@@ -8305,19 +9167,19 @@ function PurchaseDetailView({ purchase, vendors, payments = [], onBack, onUpdate
               {billExpenses.length > 0 && (
                 <>
                   <tr>
-                    <td colSpan={4} style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: muted }}>Subtotal</td>
+                    <td colSpan={5} style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: muted }}>Subtotal</td>
                     <td style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{fmtMoney(billSubtotal)}</td>
                   </tr>
                   {billExpenses.map((e, i) => (
                     <tr key={i}>
-                      <td colSpan={4} style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: muted }}>{e.label || "Other Expense"}</td>
+                      <td colSpan={5} style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: muted }}>{e.label || "Other Expense"}</td>
                       <td style={{ padding: "6px 8px", fontSize: 12.5, textAlign: "right", color: inkSoft, fontFamily: "'IBM Plex Mono', monospace" }}>{fmtMoney(Number(e.amount) || 0)}</td>
                     </tr>
                   ))}
                 </>
               )}
               <tr style={{ background: paper, fontWeight: 700 }}>
-                <td colSpan={4} style={{ padding: "8px", fontSize: 13, textAlign: "right", color: ink }}>Total</td>
+                <td colSpan={5} style={{ padding: "8px", fontSize: 13, textAlign: "right", color: ink }}>Total</td>
                 <td style={{ padding: "8px", fontSize: 14, textAlign: "right", color: ink, fontFamily: "'IBM Plex Mono', monospace" }}>{fmtMoney(total)}</td>
               </tr>
             </tbody>
@@ -8668,7 +9530,7 @@ function PaymentModal({ vendors, purchases = [], bankAccounts, value, onClose, o
           {f.vendorId && vendorOutstanding && (() => {
             const bal = vendorOutstanding(f.vendorId);
             return (
-              <div className="flex justify-end" style={{ marginTop: -4, marginBottom: 2 }}>
+              <div className="flex justify-end" style={{ marginTop: 2, marginBottom: 4 }}>
                 <span style={{ color: muted, fontSize: 11.5 }}>
                   Balance:{" "}
                   <b style={{ color: bal > 0 ? danger : bal < 0 ? success : ink, fontFamily: "'IBM Plex Mono', monospace" }}>
@@ -8753,7 +9615,7 @@ function PaymentModal({ vendors, purchases = [], bankAccounts, value, onClose, o
 // outstanding on it), while Date/Mode/Bank/Reference/Notes are shared across
 // the whole batch. Rows can be individually excluded (amount cleared to 0)
 // without leaving the modal.
-function BulkPurchasePaymentModal({ purchases, vendors, payments, onClose, onSave }) {
+function BulkPurchasePaymentModal({ purchases, vendors, payments, bankAccounts = [], onClose, onSave }) {
   const vendorById = useMemo(() => new Map(vendors.map((v) => [v.id, v])), [vendors]);
   const rows = useMemo(() => purchases.map((p) => {
     const alreadyPaid = payments
@@ -8831,7 +9693,22 @@ function BulkPurchasePaymentModal({ purchases, vendors, payments, onClose, onSav
               <InlineSelect value={mode} onChange={setMode} options={PAYMENT_MODES} className={inputCls} style={inputStyle} />
             </InlineRow>
             {mode !== "Cash" && mode !== "Discount" && mode !== "Purchase Return" && (
-              <InlineRow label="Bank Name"><input value={bankName} onChange={(e) => setBankName(e.target.value)} className={inputCls} style={inputStyle} placeholder="e.g. HDFC 4321" /></InlineRow>
+              <InlineRow label="Bank A/c">
+                {bankAccounts.length ? (
+                  <InlineSelect
+                    value={bankName}
+                    onChange={setBankName}
+                    options={bankAccounts.map((b) => ({ value: b.bankName, label: `${b.bankName}${b.accountNumber ? ` (${b.accountNumber})` : ""}` }))}
+                    placeholder="Select bank account"
+                    className={inputCls}
+                    style={inputStyle}
+                  />
+                ) : (
+                  // No accounts set up yet — fall back to free text rather
+                  // than an empty dropdown that can't be used.
+                  <input value={bankName} onChange={(e) => setBankName(e.target.value)} className={inputCls} style={inputStyle} placeholder="e.g. HDFC 4321" />
+                )}
+              </InlineRow>
             )}
             <InlineRow label="Reference"><input value={reference} onChange={(e) => setReference(e.target.value)} className={inputCls} style={inputStyle} placeholder="Cheque / ref no." /></InlineRow>
             <InlineRow label="Notes"><input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} style={inputStyle} /></InlineRow>
@@ -8886,7 +9763,7 @@ function BulkPurchasePaymentModal({ purchases, vendors, payments, onClose, onSav
 // Records a receipt against each of several selected invoices in one go —
 // used from the Sales tab's bulk-selection toolbar. Mirrors
 // BulkPurchasePaymentModal exactly, just customer/invoice-flavoured.
-function BulkInvoiceReceiptModal({ invoices, customers, receipts, invoiceTotal, onClose, onSave }) {
+function BulkInvoiceReceiptModal({ invoices, customers, receipts, invoiceTotal, bankAccounts = [], onClose, onSave }) {
   const customerById = useMemo(() => new Map(customers.map((c) => [c.id, c])), [customers]);
   const rows = useMemo(() => invoices.map((inv) => {
     const alreadyReceived = receipts
@@ -8964,7 +9841,22 @@ function BulkInvoiceReceiptModal({ invoices, customers, receipts, invoiceTotal, 
               <InlineSelect value={mode} onChange={setMode} options={RECEIPT_MODES} className={inputCls} style={inputStyle} />
             </InlineRow>
             {mode !== "Cash" && mode !== "Discount" && mode !== "Sale Return" && (
-              <InlineRow label="Bank Name"><input value={bankName} onChange={(e) => setBankName(e.target.value)} className={inputCls} style={inputStyle} placeholder="e.g. HDFC 4321" /></InlineRow>
+              <InlineRow label="Bank A/c">
+                {bankAccounts.length ? (
+                  <InlineSelect
+                    value={bankName}
+                    onChange={setBankName}
+                    options={bankAccounts.map((b) => ({ value: b.bankName, label: `${b.bankName}${b.accountNumber ? ` (${b.accountNumber})` : ""}` }))}
+                    placeholder="Select bank account"
+                    className={inputCls}
+                    style={inputStyle}
+                  />
+                ) : (
+                  // No accounts set up yet — fall back to free text rather
+                  // than an empty dropdown that can't be used.
+                  <input value={bankName} onChange={(e) => setBankName(e.target.value)} className={inputCls} style={inputStyle} placeholder="e.g. HDFC 4321" />
+                )}
+              </InlineRow>
             )}
             <InlineRow label="Reference"><input value={reference} onChange={(e) => setReference(e.target.value)} className={inputCls} style={inputStyle} placeholder="Cheque / ref no." /></InlineRow>
             <InlineRow label="Notes"><input value={notes} onChange={(e) => setNotes(e.target.value)} className={inputCls} style={inputStyle} /></InlineRow>
@@ -9016,8 +9908,12 @@ function BulkInvoiceReceiptModal({ invoices, customers, receipts, invoiceTotal, 
 }
 
 
-function CompanyModal({ companies, activeId, onSwitch, onCreate, onRename, onDelete, onClose }) {
+function CompanyModal({ companies, activeId, onSwitch, onCreate, onRename, onDelete, onClose, onCarryForward }) {
   const [adding, setAdding] = useState(false);
+  const [carryOpen, setCarryOpen] = useState(false);
+  const [carryName, setCarryName] = useState("");
+  const [carryDate, setCarryDate] = useState(() => currentFYDates().to);
+  const [carryErr, setCarryErr] = useState("");
   const [newName, setNewName] = useState("");
   const [renamingId, setRenamingId] = useState(null);
   const [renameText, setRenameText] = useState("");
@@ -9122,6 +10018,53 @@ function CompanyModal({ companies, activeId, onSwitch, onCreate, onRename, onDel
           >
             <Plus size={16} /> New Company
           </button>
+        )}
+
+        {/* Year-end carry-forward — starts a fresh book with balances brought
+            over, leaving this company's history untouched. */}
+        {onCarryForward && (
+          <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${hairline}` }}>
+            {carryOpen ? (
+              <>
+                <div style={{ color: inkSoft, fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>Start New Year</div>
+                <p style={{ color: muted, fontSize: 11.5, lineHeight: 1.5, marginBottom: 10 }}>
+                  Creates a new company with your customers, vendors, banks and units carried over — each party's closing balance as on the date below becomes their opening balance. Invoices, receipts, purchases and payments are <b>not</b> copied; they stay in <b>{companies.find((c) => c.id === activeId)?.name || "this company"}</b>, which remains fully readable.
+                </p>
+                <div className="space-y-2.5 mb-3">
+                  <InlineRow label="New name">
+                    <input value={carryName} onChange={(e) => setCarryName(e.target.value)} placeholder="e.g. My Company FY 2027-28" className={inputCls} style={inputStyle} autoFocus />
+                  </InlineRow>
+                  <InlineRow label="Balances as on">
+                    <DateField value={carryDate} onChange={setCarryDate} className={inputCls} style={inputStyle} />
+                  </InlineRow>
+                </div>
+                {carryErr && <div style={{ background: dangerBg, color: danger, fontSize: 12, padding: "7px 9px", borderRadius: 8, marginBottom: 10 }}>{carryErr}</div>}
+                <div className="flex gap-2">
+                  <button onClick={() => { setCarryOpen(false); setCarryErr(""); }} className="flex-1 py-2.5 rounded-lg text-sm font-semibold" style={{ border: `1px solid ${hairline}`, color: muted }}>Cancel</button>
+                  <button
+                    onClick={async () => {
+                      if (!carryName.trim()) { setCarryErr("Enter a name for the new company."); return; }
+                      if (!carryDate) { setCarryErr("Pick the cut-off date."); return; }
+                      setCarryErr("");
+                      await onCarryForward(carryName, carryDate);
+                    }}
+                    className="flex-1 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1"
+                    style={{ background: thread, color: ink }}
+                  >
+                    <Check size={16} /> Create &amp; Switch
+                  </button>
+                </div>
+              </>
+            ) : (
+              <button
+                onClick={() => setCarryOpen(true)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg font-semibold text-sm"
+                style={{ background: card, border: `1px solid ${hairline}`, color: inkSoft }}
+              >
+                <ArrowRight size={16} /> Start New Year (carry balances forward)
+              </button>
+            )}
+          </div>
         )}
 
         <p style={{ color: muted, fontSize: 11, lineHeight: 1.5, marginTop: 12 }}>
@@ -9798,55 +10741,6 @@ function TransactionReportView({ invoices, receipts, customers, purchases = [], 
 }
 
 // ============ SHARED DATE RANGE BAR ============
-function DateRangeBar({ from, to, setFrom, setTo, quickRangeDates }) {
-  const [pf, setPf] = useState(from);
-  const [pt, setPt] = useState(to);
-  useEffect(() => { setPf(from); }, [from]);
-  useEffect(() => { setPt(to); }, [to]);
-  const inputStyle = { border: `1px solid ${hairline}`, color: ink, background: "#fff", minWidth: 0 };
-  return (
-    <div className="mb-4">
-      <div className="flex items-end gap-1.5 mb-3">
-        <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div style={{ color: muted, fontSize: 11, marginBottom: 3 }}>From</div>
-          <DateField value={pf} onChange={setPf} className="px-1.5 py-2 rounded-lg text-xs outline-none" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
-        </div>
-        <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div style={{ color: muted, fontSize: 11, marginBottom: 3 }}>To</div>
-          <DateField value={pt} onChange={setPt} className="px-1.5 py-2 rounded-lg text-xs outline-none" style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} />
-        </div>
-        <button
-          onClick={() => { setFrom(pf); setTo(pt); }}
-          className="flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-sm font-semibold shrink-0"
-          style={{ background: ink, color: "#fff" }}
-        >
-          <Filter size={14} /> Filter
-        </button>
-        {(from || to || pf || pt) && (
-          <button
-            onClick={() => { setFrom(""); setTo(""); setPf(""); setPt(""); }}
-            className="px-3 py-2 rounded-lg text-xs font-medium shrink-0"
-            style={{ border: `1px solid ${hairline}`, color: muted, background: "#fff" }}
-          >
-            Clear
-          </button>
-        )}
-      </div>
-      <div className="grid grid-cols-3 gap-2">
-        {[["current", "Current Month"], ["previous", "Previous Month"], ["fy", "Current Financial Year"]].map(([k, label]) => (
-          <button
-            key={k}
-            onClick={() => { const r = quickRangeDates(k); setFrom(r.from); setTo(r.to); }}
-            className="py-2 rounded-lg text-xs font-semibold"
-            style={{ border: `1px solid ${hairline}`, color: inkSoft, background: card }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 // ============ CUSTOMER PRINTS ============
 function ConfirmPrintModal({ title, subtitle, onClose }) {
@@ -9918,7 +10812,22 @@ function ConfirmPrintModal({ title, subtitle, onClose }) {
   );
 }
 
-function SummaryTable({ customers, customerOutstanding }) {
+function SummaryTable({ customers, customerOutstanding, invoices = [] }) {
+  // Last sale per customer, taken from their most recent invoice date.
+  // Built once as a Map rather than scanning the invoice list per row.
+  const lastSale = useMemo(() => {
+    const m = new Map();
+    for (const inv of invoices) {
+      const prev = m.get(inv.customerId);
+      if (!prev || inv.date > prev) m.set(inv.customerId, inv.date);
+    }
+    return m;
+  }, [invoices]);
+  const daysSince = (d) => {
+    if (!d) return null;
+    const ms = new Date(`${todayISO()}T12:00:00`) - new Date(`${d}T12:00:00`);
+    return Math.max(0, Math.round(ms / 86400000));
+  };
   const th = (align) => ({ border: "1px solid #333", padding: "4px 6px", textAlign: align, fontWeight: 700, background: "#f2f2f2", fontSize: 12 });
   const td = (align) => ({ border: "1px solid #333", padding: "3px 6px", textAlign: align, fontSize: 12 });
   const balances = customers.map((c) => customerOutstanding(c.id));
@@ -9929,21 +10838,30 @@ function SummaryTable({ customers, customerOutstanding }) {
       <thead>
         <tr>
           <th style={th("center")}>SN</th>
-          <th style={th("left")}>Name</th>
-          <th style={th("left")}>Address</th>
+          <th style={th("left")}>Customer Details</th>
           <th style={th("left")}>Phone</th>
+          <th style={th("center")}>Last Sale</th>
+          <th style={th("center")}>Days</th>
           <th style={th("right")}>Balance</th>
         </tr>
       </thead>
       <tbody>
         {customers.map((c, i) => {
           const bal = customerOutstanding(c.id);
+          const last = lastSale.get(c.id);
+          const days = daysSince(last);
           return (
             <tr key={c.id}>
               <td style={td("center")}>{i + 1}</td>
-              <td style={td("left")}>{c.name}</td>
-              <td style={td("left")}>{c.address || "—"}</td>
+              {/* Name and address share one column so the two new date
+                  columns fit without the table overflowing the page. */}
+              <td style={td("left")}>
+                <span style={{ fontWeight: 600 }}>{c.name}</span>
+                {c.address ? <span style={{ color: "#555" }}> — {c.address}</span> : null}
+              </td>
               <td style={td("left")}>{c.phone1 || "—"}</td>
+              <td style={{ ...td("center"), whiteSpace: "nowrap" }}>{last ? fmtDate(last) : "—"}</td>
+              <td style={td("center")}>{days === null ? "—" : days}</td>
               <td style={{ ...td("right"), whiteSpace: "nowrap", fontWeight: 600 }}>
                 {fmtMoney(Math.abs(bal))} {bal >= 0 ? "DR" : "CR"}
               </td>
@@ -9953,7 +10871,7 @@ function SummaryTable({ customers, customerOutstanding }) {
       </tbody>
       <tfoot>
         <tr style={{ fontWeight: 700 }}>
-          <td colSpan={4} style={{ padding: "5px 6px", textAlign: "right" }}>Total Dr / Cr</td>
+          <td colSpan={5} style={{ padding: "5px 6px", textAlign: "right" }}>Total Dr / Cr</td>
           <td style={{ padding: "5px 6px", textAlign: "right", whiteSpace: "nowrap" }}>
             {fmtMoney(totalDr)} DR · {fmtMoney(totalCr)} CR
           </td>
@@ -9963,7 +10881,7 @@ function SummaryTable({ customers, customerOutstanding }) {
   );
 }
 
-function CustomerSummaryPrint({ customers, customerOutstanding }) {
+function CustomerSummaryPrint({ customers, customerOutstanding, invoices = [] }) {
   return (
     <div className="print-area" style={{ padding: 32, fontFamily: "'Inter', sans-serif", color: "#111" }}>
       <div style={{ marginBottom: 16 }}>
@@ -9972,12 +10890,12 @@ function CustomerSummaryPrint({ customers, customerOutstanding }) {
           Customer Summary Balances — {customers.length} customer{customers.length !== 1 ? "s" : ""} · {fmtDate(todayISO())}
         </div>
       </div>
-      <SummaryTable customers={customers} customerOutstanding={customerOutstanding} />
+      <SummaryTable customers={customers} customerOutstanding={customerOutstanding} invoices={invoices} />
     </div>
   );
 }
 
-function CustomerSummaryPreviewModal({ customers, customerOutstanding, selectionCount = 0, onClose }) {
+function CustomerSummaryPreviewModal({ customers, customerOutstanding, invoices = [], selectionCount = 0, onClose }) {
   return (
     <PrintPreviewOverlay
       title="Customer Summary Balances"
@@ -9995,7 +10913,7 @@ function CustomerSummaryPreviewModal({ customers, customerOutstanding, selection
           {customers.length === 0 ? (
             <div style={{ textAlign: "center", color: "#888", fontSize: 13, padding: "24px 0" }}>No customers to show.</div>
           ) : (
-            <SummaryTable customers={customers} customerOutstanding={customerOutstanding} />
+            <SummaryTable customers={customers} customerOutstanding={customerOutstanding} invoices={invoices} />
           )}
         </div>
       </PaperSheet>
@@ -10887,15 +11805,12 @@ function VendorDetailView({ vendor, purchases, payments = [], onBack, onSave, le
   );
 }
 
-const InlineRow = ({ label, children }) => (
-  <div className="flex items-center gap-2">
-    <span style={{ width: 92, flexShrink: 0, fontSize: 13, color: muted }}>{label}</span>
-    {children}
-  </div>
-);
 
 function CustomerModal({ value, setValue, onSave, onClose, editing = false }) {
   const set = (field) => (e) => setValue((v) => ({ ...v, [field]: e.target.value }));
+  const hasShip = !!(value.shipAddress || value.shipCity || value.shipState || value.shipPin || value.transporter);
+  // Opens expanded when there's already an address, so editing doesn't hide it.
+  const [showShip, setShowShip] = useState(hasShip);
   const inputCls = "flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-sm outline-none";
   const inputStyle = { border: `1px solid ${hairline}`, color: ink, background: "#fff" };
   return (
@@ -10953,6 +11868,52 @@ function CustomerModal({ value, setValue, onSave, onClose, editing = false }) {
           <InlineRow label="As On">
             <DateField value={value.openingBalanceDate} onChange={(v) => setValue((prev) => ({ ...prev, openingBalanceDate: v }))} className={inputCls} style={inputStyle} />
           </InlineRow>
+        </div>
+
+        {/* Shipping address — kept collapsed by default so it doesn't crowd
+            the common case, and only needed for parties you actually ship to. */}
+        <div className="mt-3 pt-3" style={{ borderTop: `1px solid ${hairline}` }}>
+          {!showShip ? (
+            <button
+              type="button"
+              onClick={() => setShowShip(true)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold w-full justify-center"
+              style={{ border: `1px dashed ${hairline}`, color: hasShip ? ink : muted, background: "#fff" }}
+            >
+              <Plus size={15} /> {hasShip ? "Edit Shipping Address" : "Add Shipping Address"}
+              {hasShip && <span style={{ color: success, fontSize: 10, fontWeight: 700 }}>SET</span>}
+            </button>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <span style={{ color: inkSoft, fontSize: 12.5, fontWeight: 700 }}>Shipping Address</span>
+                <button type="button" onClick={() => setShowShip(false)} style={{ color: muted, fontSize: 12, fontWeight: 600 }}>Hide</button>
+              </div>
+              <div className="space-y-2.5">
+                <InlineRow label="Ship To">
+                  <input value={value.shipName || ""} onChange={set("shipName")} placeholder="defaults to customer name" className={inputCls} style={inputStyle} />
+                </InlineRow>
+                <InlineRow label="Address">
+                  <textarea value={value.shipAddress || ""} onChange={set("shipAddress")} rows={4} placeholder="flat / building / street — press Enter to start a new printed line" className={inputCls} style={{ ...inputStyle, resize: "vertical" }} />
+                </InlineRow>
+                <InlineRow label="City">
+                  <input value={value.shipCity || ""} onChange={set("shipCity")} className={inputCls} style={inputStyle} />
+                </InlineRow>
+                <InlineRow label="State">
+                  <input value={value.shipState || ""} onChange={set("shipState")} className={inputCls} style={inputStyle} />
+                </InlineRow>
+                <InlineRow label="PIN">
+                  <input inputMode="numeric" value={value.shipPin || ""} onChange={set("shipPin")} className={inputCls} style={inputStyle} />
+                </InlineRow>
+                <InlineRow label="Phone">
+                  <input inputMode="tel" value={value.shipPhone || ""} onChange={set("shipPhone")} placeholder="defaults to Phone 1" className={inputCls} style={inputStyle} />
+                </InlineRow>
+                <InlineRow label="Transport">
+                  <input value={value.transporter || ""} onChange={set("transporter")} placeholder="transporter name" className={inputCls} style={inputStyle} />
+                </InlineRow>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>
@@ -11101,8 +12062,11 @@ function packingLayout(invoice) {
   const sheets = chunkSheets(pages);
   const expenses = (invoice.expenses || []).filter((e) => Number(e.amount) !== 0);
   const expenseTotal = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const totalQty = rows.reduce((s, r) => s + r.qty, 0);
-  const itemsTotal = rows.reduce((s, r) => s + r.amount, 0);
+  // Coerce explicitly: a cancelled row carries "" for qty/rate so the printed
+  // cell is blank, and "" would otherwise turn this sum into string
+  // concatenation rather than addition.
+  const totalQty = rows.reduce((s, r) => s + (Number(r.qty) || 0), 0);
+  const itemsTotal = rows.reduce((s, r) => s + (Number(r.amount) || 0), 0);
   return { rows, pages, sheets, expenses, expenseTotal, totalQty, itemsTotal, grandTotal: itemsTotal + expenseTotal };
 }
 
@@ -11174,13 +12138,13 @@ function PackingSheet({ sheetPages, sIdx, pages, invoice, customer, totalQty, to
                   </thead>
                   <tbody>
                     {pageRows.map((r) => (
-                      <tr key={r.sn}>
+                      <tr key={r.sn} style={r.cancelled ? { color: "#777" } : undefined}>
                         <td style={tdStyle("center")}>{r.sn}</td>
                         <td style={tdStyle("right")}>{r.qty}</td>
-                        <td style={{ ...tdStyle("left"), whiteSpace: "nowrap" }}>{r.sizeDisplay}</td>
+                        <td style={{ ...tdStyle("left"), whiteSpace: "nowrap", fontWeight: r.cancelled ? 700 : undefined }}>{r.sizeDisplay}</td>
                         <td style={{ ...tdStyle("right"), whiteSpace: "nowrap" }}>{r.totalQtyDisplay}</td>
-                        <td style={tdStyle("right")}>{r.rate.toFixed(1)}</td>
-                        <td style={tdStyle("right")}>{fmtNum(r.amount)}</td>
+                        <td style={tdStyle("right")}>{r.cancelled ? "" : Number(r.rate).toFixed(1)}</td>
+                        <td style={tdStyle("right")}>{r.cancelled ? "" : fmtNum(r.amount)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -11189,14 +12153,14 @@ function PackingSheet({ sheetPages, sIdx, pages, invoice, customer, totalQty, to
                       <tr>
                         <td style={{ padding: "4px 6px" }}></td>
                         <td style={{ padding: "4px 6px", fontWeight: 700, textAlign: "right" }}>
-                          {pageRows.reduce((s, r) => s + r.qty, 0)}
+                          {pageRows.reduce((s, r) => s + (Number(r.qty) || 0), 0)}
                         </td>
                         <td colSpan={2}></td>
                         <td style={{ padding: "4px 6px", fontWeight: 700, textAlign: "right" }}>
                           Total ({pageIndex + 1}/{pages.length})
                         </td>
                         <td style={{ padding: "4px 6px", fontWeight: 700, textAlign: "right" }}>
-                          {fmtNum(pageRows.reduce((s, r) => s + r.amount, 0))}
+                          {fmtNum(pageRows.reduce((s, r) => s + (Number(r.amount) || 0), 0))}
                         </td>
                       </tr>
                     </tfoot>
@@ -11250,6 +12214,360 @@ function PackingSheet({ sheetPages, sIdx, pages, invoice, customer, totalQty, to
           {sheetPages.length === 1 && (
             <div style={{ float: "left", width: "50%", boxSizing: "border-box" }} />
           )}
+    </div>
+  );
+}
+
+// Picks the From address, previews the label, and hands off to the same
+// print/share pipeline the invoice preview uses.
+function ShippingLabelModal({ invoice, customer, shipFroms, onSaveFroms, onSaveShipping, onClose }) {
+  const [fromId, setFromId] = useState(() => {
+    try { return localStorage.getItem("textile-bill-lastfrom") || (shipFroms[0]?.id || ""); } catch { return shipFroms[0]?.id || ""; }
+  });
+  const [manageOpen, setManageOpen] = useState(shipFroms.length === 0);
+  const [editOpen, setEditOpen] = useState(false);
+  const from = shipFroms.find((f) => f.id === fromId) || shipFroms[0] || null;
+  const ship = shipToOf(customer);
+
+  useEffect(() => {
+    if (from?.id) { try { localStorage.setItem("textile-bill-lastfrom", from.id); } catch {} }
+  }, [from?.id]);
+
+  return (
+    <>
+      <PrintPreviewOverlay
+        title={`Shipping Label — ${invoice.invoiceNo}`}
+        filename={`Shipping Label ${invoice.invoiceNo}`}
+        subtitle="A4 landscape, 2 labels per sheet"
+        onClose={onClose}
+      >
+        <div className="no-print mb-3 flex items-end gap-2 flex-wrap">
+          <div style={{ minWidth: 200, flex: "1 1 auto" }}>
+            <div style={{ color: "#B9C2D6", fontSize: 11, fontWeight: 600, marginBottom: 4 }}>From address</div>
+            <InlineSelect
+              value={fromId}
+              onChange={setFromId}
+              options={shipFroms.length
+                ? shipFroms.map((f) => ({ value: f.id, label: f.name }))
+                : [{ value: "", label: "No from-addresses yet" }]}
+              className="px-2.5 py-1.5 rounded-lg text-sm outline-none w-full"
+              style={{ border: `1px solid ${hairline}`, color: ink, background: "#fff" }}
+            />
+          </div>
+          <button
+            onClick={() => setManageOpen(true)}
+            className="px-3 py-2 rounded-lg text-sm font-semibold"
+            style={{ background: "#fff", color: ink }}
+          >
+            Manage
+          </button>
+          {onSaveShipping && customer && (
+            <button
+              onClick={() => setEditOpen(true)}
+              className="px-3 py-2 rounded-lg text-sm font-semibold"
+              style={{ background: "#fff", color: ink }}
+            >
+              {ship?.complete ? "Edit Ship-To Address" : "Add Ship-To Address"}
+            </button>
+          )}
+        </div>
+
+        {!ship?.complete && (
+          <div className="no-print mb-3 px-3 py-2 rounded-lg" style={{ background: "#FBF4E7", color: "#8A6416", fontSize: 12.5 }}>
+            No shipping address saved for {customer?.name || "this customer"} — using their regular address. Tap “Add Ship-To Address” above for a complete label.
+          </div>
+        )}
+
+        <PaperSheet landscape>
+          <ShippingLabelSheet invoice={invoice} customer={customer} from={from} />
+        </PaperSheet>
+      </PrintPreviewOverlay>
+
+      {/* Hidden copy that print / Save PDF / Share actually capture. */}
+      <ShippingLabelPrint invoice={invoice} customer={customer} from={from} />
+
+      {manageOpen && (
+        <ShipFromManager
+          shipFroms={shipFroms}
+          onSave={(next, newId) => { onSaveFroms(next); if (newId) setFromId(newId); }}
+          onClose={() => setManageOpen(false)}
+        />
+      )}
+
+      {editOpen && (
+        <ShipToEditModal
+          customer={customer}
+          onSave={(patch) => { onSaveShipping(customer.id, patch); setEditOpen(false); }}
+          onClose={() => setEditOpen(false)}
+        />
+      )}
+    </>
+  );
+}
+
+// Edits just the shipping-address fields on the invoice's customer, directly
+// from the label screen — the same fields as the customer's own Edit screen,
+// so nothing about the data shape changes, just where it can be entered from.
+function ShipToEditModal({ customer, onSave, onClose }) {
+  const [f, setF] = useState({
+    shipName: customer.shipName || "",
+    shipAddress: customer.shipAddress || "",
+    shipCity: customer.shipCity || "",
+    shipState: customer.shipState || "",
+    shipPin: customer.shipPin || "",
+    shipPhone: customer.shipPhone || "",
+    transporter: customer.transporter || "",
+  });
+  const set = (field) => (e) => setF((p) => ({ ...p, [field]: e.target.value }));
+
+  return (
+    <div className="no-print fixed inset-0 flex items-center justify-center px-4 py-8" style={{ background: "rgba(30,42,68,0.55)", zIndex: 90 }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: "#fff", maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 18, fontWeight: 600 }}>Ship-To Address</h3>
+          <button onClick={onClose}><X size={18} color={muted} /></button>
+        </div>
+        <p style={{ color: muted, fontSize: 12, marginBottom: 12 }}>For {customer.name}. Saved to this customer, same as editing from the Customers tab.</p>
+        <div className="space-y-2.5">
+          <InlineRow label="Ship To">
+            <input value={f.shipName} onChange={set("shipName")} placeholder="defaults to customer name" className={inputCls} style={inputStyle} />
+          </InlineRow>
+          <InlineRow label="Address">
+            <textarea value={f.shipAddress} onChange={set("shipAddress")} rows={4} placeholder="flat / building / street — press Enter to start a new printed line" className={inputCls} style={{ ...inputStyle, resize: "vertical" }} />
+          </InlineRow>
+          <InlineRow label="City">
+            <input value={f.shipCity} onChange={set("shipCity")} className={inputCls} style={inputStyle} />
+          </InlineRow>
+          <InlineRow label="State">
+            <input value={f.shipState} onChange={set("shipState")} className={inputCls} style={inputStyle} />
+          </InlineRow>
+          <InlineRow label="PIN">
+            <input inputMode="numeric" value={f.shipPin} onChange={set("shipPin")} className={inputCls} style={inputStyle} />
+          </InlineRow>
+          <InlineRow label="Phone">
+            <input inputMode="tel" value={f.shipPhone} onChange={set("shipPhone")} placeholder="defaults to Phone 1" className={inputCls} style={inputStyle} />
+          </InlineRow>
+          <InlineRow label="Transport">
+            <input value={f.transporter} onChange={set("transporter")} placeholder="transporter name" className={inputCls} style={inputStyle} />
+          </InlineRow>
+        </div>
+        <div className="flex gap-2 mt-4">
+          <button onClick={onClose} className="flex-1 py-2.5 rounded-lg text-sm font-semibold" style={{ border: `1px solid ${hairline}`, color: muted }}>Cancel</button>
+          <button onClick={() => onSave(f)} className="flex-1 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1" style={{ background: thread, color: ink }}>
+            <Check size={16} /> Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Add / edit / remove the From addresses available to shipping labels.
+function ShipFromManager({ shipFroms, onSave, onClose }) {
+  const [editing, setEditing] = useState(null); // null | {} | existing
+  const [pendingDelete, setPendingDelete] = useState(null);
+
+  return (
+    <div className="no-print fixed inset-0 flex items-center justify-center px-4 py-8" style={{ background: "rgba(30,42,68,0.55)", zIndex: 90 }}>
+      <div className="w-full max-w-sm rounded-xl p-5" style={{ background: "#fff", maxHeight: "85vh", overflowY: "auto" }}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 18, fontWeight: 600 }}>From Addresses</h3>
+          <button onClick={onClose}><X size={18} color={muted} /></button>
+        </div>
+
+        {editing ? (
+          <ShipFromForm
+            value={editing}
+            onCancel={() => setEditing(null)}
+            onSave={(data) => {
+              if (data.id) {
+                onSave(shipFroms.map((f) => (f.id === data.id ? data : f)));
+              } else {
+                const withId = { ...data, id: uid() };
+                onSave([...shipFroms, withId], withId.id);
+              }
+              setEditing(null);
+            }}
+          />
+        ) : (
+          <>
+            {shipFroms.length === 0 && (
+              <p style={{ color: muted, fontSize: 13, marginBottom: 12 }}>
+                None yet. Add the address goods are dispatched from — you can keep several and pick one per label.
+              </p>
+            )}
+            <div className="space-y-2 mb-3">
+              {shipFroms.map((f) => (
+                <div key={f.id} className="flex items-start justify-between gap-2 px-3 py-2 rounded-lg" style={{ border: `1px solid ${hairline}` }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ color: ink, fontWeight: 600, fontSize: 13.5 }}>{f.name}</div>
+                    <div style={{ color: muted, fontSize: 11.5, lineHeight: 1.4, whiteSpace: "pre-line" }}>{f.address}</div>
+                  </div>
+                  <div className="flex items-center gap-1" style={{ flexShrink: 0 }}>
+                    <button onClick={() => setEditing(f)} style={{ color: inkSoft, padding: 3 }} title="Edit"><Edit2 size={14} /></button>
+                    {pendingDelete === f.id ? (
+                      <button onClick={() => { onSave(shipFroms.filter((x) => x.id !== f.id)); setPendingDelete(null); }} className="text-xs font-bold" style={{ color: danger }}>Sure?</button>
+                    ) : (
+                      <button onClick={() => setPendingDelete(f.id)} style={{ color: danger, padding: 3 }} title="Delete"><Trash2 size={14} /></button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <button
+              onClick={() => setEditing({ name: "", address: "", phone: "" })}
+              className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
+              style={{ border: `1px dashed ${hairline}`, color: muted }}
+            >
+              <Plus size={15} /> Add From Address
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ShipFromForm({ value, onSave, onCancel }) {
+  const [f, setF] = useState({ id: value.id, name: value.name || "", address: value.address || "", phone: value.phone || "" });
+  const [error, setError] = useState("");
+  return (
+    <div>
+      {error && <div style={{ background: dangerBg, color: danger, fontSize: 12.5, padding: "8px 10px", borderRadius: 8, marginBottom: 12 }}>{error}</div>}
+      <div className="space-y-2.5">
+        <InlineRow label="Name">
+          <input value={f.name} onChange={(e) => setF((p) => ({ ...p, name: e.target.value }))} className={inputCls} style={inputStyle} autoFocus placeholder="business / branch name" />
+        </InlineRow>
+        <InlineRow label="Address">
+          <textarea value={f.address} onChange={(e) => setF((p) => ({ ...p, address: e.target.value }))} rows={3} className={inputCls} style={{ ...inputStyle, resize: "vertical" }} placeholder="full address" />
+        </InlineRow>
+        <InlineRow label="Phone">
+          <input inputMode="tel" value={f.phone} onChange={(e) => setF((p) => ({ ...p, phone: e.target.value }))} className={inputCls} style={inputStyle} />
+        </InlineRow>
+      </div>
+      <div className="flex gap-2 mt-4">
+        <button onClick={onCancel} className="flex-1 py-2.5 rounded-lg text-sm font-semibold" style={{ border: `1px solid ${hairline}`, color: muted }}>Cancel</button>
+        <button
+          onClick={() => {
+            if (!f.name.trim()) { setError("Enter a name."); return; }
+            if (!f.address.trim()) { setError("Enter an address."); return; }
+            onSave({ ...f, name: f.name.trim(), address: f.address.trim(), phone: f.phone.trim() });
+          }}
+          className="flex-1 py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-1"
+          style={{ background: thread, color: ink }}
+        >
+          <Check size={16} /> Save
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---------- shipping label ----------
+// A hand-typed address is often one long comma-separated run ("flat, street,
+// area, landmark, ..."), which prints as a single wide, hard-to-scan line.
+// Breaking after every 2nd comma keeps each printed line to a natural
+// address-line length regardless of how the person originally typed it.
+function wrapAddressByCommas(text, perLine = 3) {
+  const raw = String(text || "");
+  // Pressing Enter in the address field is how the person controls exactly
+  // where a line breaks on the printed label — that's honoured first. Only
+  // when they haven't broken it up themselves (a single unbroken line) does
+  // it fall back to wrapping automatically after every 2nd comma, so a
+  // long address typed as one run still prints in readable chunks.
+  const manualLines = raw.split("\n").map((l) => l.trim()).filter(Boolean);
+  if (manualLines.length > 1) return manualLines;
+
+  const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const lines = [];
+  for (let i = 0; i < parts.length; i += perLine) {
+    lines.push(parts.slice(i, i + perLine).join(", "));
+  }
+  return lines;
+}
+
+// Resolves the address a courier needs. Falls back to the customer's own
+// name/phone when the shipping-specific fields are blank, so a label is
+// still usable for a party whose shipping address was never filled in.
+function shipToOf(customer) {
+  if (!customer) return null;
+  const cityLine = [
+    [customer.shipCity, customer.shipState].filter(Boolean).join(", "),
+    customer.shipPin && `PIN ${customer.shipPin}`,
+  ].filter(Boolean).join(" — ");
+  const lines = [...wrapAddressByCommas(customer.shipAddress), cityLine]
+    .filter((l) => l && String(l).trim());
+  return {
+    name: (customer.shipName || "").trim() || customer.name || "",
+    lines: lines.length ? lines : [customer.address || ""].filter(Boolean),
+    phone: (customer.shipPhone || "").trim() || customer.phone1 || "",
+    complete: !!(customer.shipAddress || customer.shipCity || customer.shipState || customer.shipPin),
+  };
+}
+
+// One A4-landscape sheet carrying a single label on the left half.
+// Deliberately no barcode and no item lines — just who it's going to and
+// who it's from.
+function ShippingLabelSheet({ invoice, customer, from }) {
+  const ship = shipToOf(customer);
+  const labelCap = { fontSize: 13, letterSpacing: "0.08em", color: "#555", fontWeight: 700, marginBottom: 5 };
+  const bigName = { fontSize: 20, fontWeight: 700, color: "#000", marginBottom: 5 };
+  const addrLine = { fontSize: 17, color: "#111", lineHeight: 1.5 };
+
+  return (
+    // One label per sheet. The left half carries the label and the right half
+    // is left blank, so the sheet still folds/cuts on the same centre line as
+    // the other two-up documents without printing a duplicate.
+    <div style={{ width: A4.landW, minHeight: A4.landH, background: "#fff", display: "flex", position: "relative" }}>
+      <div style={{ width: "50%", boxSizing: "border-box", padding: "26px 30px", display: "flex", flexDirection: "column" }}>
+        {/* Top margin before the label content starts, so it doesn't sit
+            flush against the sheet edge. */}
+        <div style={{ height: "4em" }} aria-hidden="true" />
+
+        <div style={{ marginBottom: 18 }}>
+          <div style={labelCap}>DELIVER TO</div>
+          <div style={bigName}>
+            {ship?.name || "—"}
+            {ship?.phone && (
+              <span style={{ fontSize: 17, fontWeight: 600 }}> (M-{ship.phone})</span>
+            )}
+          </div>
+          {(ship?.lines || []).map((l, i) => (<div key={i} style={addrLine}>{l}</div>))}
+        </div>
+
+        {/* Three blank line-heights of separation, as requested — kept as its
+            own spacer rather than folded into a margin so the gap is exact
+            regardless of how many address lines DELIVER TO ends up with. */}
+        <div style={{ height: "3em" }} aria-hidden="true" />
+
+        <div>
+          <div style={labelCap}>FROM</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#000", marginBottom: 4 }}>
+            {from?.name || "—"}
+            {from?.phone && <span style={{ fontSize: 16, fontWeight: 600 }}> (M-{from.phone})</span>}
+          </div>
+          {(from?.address || "").split("\n").filter(Boolean).map((l, i) => (
+            <div key={i} style={{ fontSize: 16, color: "#222", lineHeight: 1.5 }}>{l}</div>
+          ))}
+        </div>
+      </div>
+
+      {/* Centre fold line kept so the sheet matches the other two-up prints. */}
+      <div style={{ position: "absolute", left: "50%", top: 24, bottom: 24, borderLeft: "1px dashed #999" }} />
+    </div>
+  );
+}
+
+// Hidden copy that print / Save PDF / Share capture. Same sheet, wrapped in
+// the print-area/print-sheet classes the print pipeline looks for — those
+// are display:none on screen, which is why the preview renders the bare
+// sheet above instead of reusing this.
+function ShippingLabelPrint({ invoice, customer, from }) {
+  return (
+    <div className="print-area packing-print" style={{ fontFamily: "'Inter', sans-serif", color: "#111" }}>
+      <div className="print-sheet">
+        <ShippingLabelSheet invoice={invoice} customer={customer} from={from} />
+      </div>
     </div>
   );
 }
@@ -11781,6 +13099,16 @@ function PrintableRegister({ invoices, customers, invoiceTotal, separateBySeries
 // recent-activity tables (Invoices / Receipts / Payments), and two
 // filterable monthly tables (Sales & Receipts / Purchases & Payments) that
 // drill into a customer-wise or vendor-wise breakdown for a clicked month.
+
+// Dashboard tab — split into its own module so it isn't part of the initial
+// bundle. It loads the first time the tab is opened (see React.lazy in
+// TextileSales.jsx) and is cached from then on.
+
+
+// Dashboard tab — split into its own module so it is not part of the
+// initial bundle. Loads the first time the tab is opened (see React.lazy in
+// TextileSales.jsx) and is cached from then on.
+
 function DashboardView({
   customers, vendors, invoices, purchases, payments, receipts,
   invoiceTotal, customerOutstanding, vendorOutstanding,
@@ -12158,6 +13486,18 @@ function DashboardView({
 // bill-level aging isn't otherwise possible). Any balance left over after all
 // known bills are consumed (e.g. from an opening balance predating the
 // tracked bills) is bucketed as 90+ days.
+
+// Data Analytics tab — split into its own module so it isn't part of the
+// initial bundle. It loads the first time the tab is opened (see React.lazy
+// in TextileSales.jsx) and is cached from then on. The charts and drill-down
+// modals it owns live here too, since nothing else uses them.
+
+
+// Data Analytics tab — split into its own module so it is not part of the
+// initial bundle. Loads the first time the tab is opened (see React.lazy in
+// TextileSales.jsx) and is cached from then on. The charts and drill-down
+// modals it owns live here too, since nothing else uses them.
+
 function agingBuckets(parties, getBills, getOutstanding, todayIso) {
   const buckets = { "0-30": 0, "31-60": 0, "61-90": 0, "90+": 0 };
   const today = new Date(todayIso);
@@ -13054,6 +14394,77 @@ function LocationBalanceModal({ row, partyLabel, onClose }) {
   );
 }
 
+// Full ranked list behind the "Top 3" cards. Rows stay tappable so this is a
+// way into the per-party breakdown rather than a dead end.
+function RankAllModal({ detail, onClose, onPick }) {
+  const cellBase = { padding: "7px 9px", fontSize: 12.5, borderBottom: `1px solid ${hairline}` };
+  const total = detail.rows.reduce((s, r) => s + r.value, 0);
+
+  function exportCsv() {
+    const data = detail.rows.map((r, i) => ({
+      "Rank": i + 1,
+      [detail.partyLabel]: r.label,
+      "Documents": r.docs.length,
+      "Amount": r.value,
+      "% of Total": total > 0 ? ((r.value / total) * 100).toFixed(2) : "0.00",
+    }));
+    if (!data.length) return;
+    downloadCsv(data, `${detail.title.replace(/[^a-zA-Z0-9]+/g, "_")}_${todayISO()}`);
+  }
+
+  return (
+    <div className="no-print fixed inset-0 flex items-center justify-center px-4 py-8" style={{ background: "rgba(30,42,68,0.45)", zIndex: 60 }}>
+      <div className="w-full max-w-lg rounded-xl p-5" style={{ background: "#fff", maxHeight: "85vh", display: "flex", flexDirection: "column" }}>
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+          <div style={{ minWidth: 0 }}>
+            <h3 style={{ fontFamily: "'Fraunces', serif", color: ink, fontSize: 18, fontWeight: 600 }}>{detail.title}</h3>
+            <p style={{ color: muted, fontSize: 12, marginTop: 2 }}>
+              {detail.rows.length} {detail.rows.length === 1 ? detail.partyLabel.toLowerCase() : `${detail.partyLabel.toLowerCase()}s`} · <b style={{ color: ink }}>{fmtMoney(total)}</b> · tap a row for the breakdown
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={exportCsv} className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-semibold" style={{ background: card, border: `1px solid ${hairline}`, color: ink }}>
+              <Download size={15} /> Export
+            </button>
+            <button onClick={onClose}><X size={20} color={muted} /></button>
+          </div>
+        </div>
+        <div style={{ overflowY: "auto", overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 360 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "6px 9px", fontSize: 11, fontWeight: 700, color: muted, borderBottom: `1px solid ${hairline}`, width: 34 }}>#</th>
+                <th style={{ textAlign: "left", padding: "6px 9px", fontSize: 11, fontWeight: 700, color: muted, borderBottom: `1px solid ${hairline}` }}>{detail.partyLabel.toUpperCase()}</th>
+                <th style={{ textAlign: "right", padding: "6px 9px", fontSize: 11, fontWeight: 700, color: muted, borderBottom: `1px solid ${hairline}` }}>DOCS</th>
+                <th style={{ textAlign: "right", padding: "6px 9px", fontSize: 11, fontWeight: 700, color: muted, borderBottom: `1px solid ${hairline}` }}>AMOUNT</th>
+                <th style={{ textAlign: "right", padding: "6px 9px", fontSize: 11, fontWeight: 700, color: muted, borderBottom: `1px solid ${hairline}` }}>SHARE</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.rows.map((r, i) => (
+                <tr key={r.label + i} onClick={() => onPick(r)} style={{ cursor: "pointer" }} title="View the breakdown">
+                  <td style={{ ...cellBase, color: muted, fontFamily: "'IBM Plex Mono', monospace" }}>{i + 1}</td>
+                  <td style={{ ...cellBase, color: ink, fontWeight: 600, maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.label}</td>
+                  <td style={{ ...cellBase, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: muted }}>{r.docs.length}</td>
+                  <td style={{ ...cellBase, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", color: detail.color }}>{fmtMoney(r.value)}</td>
+                  <td style={{ ...cellBase, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: ink }}>
+                    {total > 0 ? ((r.value / total) * 100).toFixed(1) : "0.0"}%
+                  </td>
+                </tr>
+              ))}
+              <tr style={{ background: paper }}>
+                <td colSpan={3} style={{ padding: "8px 9px", fontSize: 12.5, fontWeight: 700, color: ink }}>Total</td>
+                <td style={{ padding: "8px 9px", fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: ink }}>{fmtMoney(total)}</td>
+                <td style={{ padding: "8px 9px", fontSize: 12.5, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 700, color: ink }}>100%</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AnalyticsCard({ icon, title, subtitle, children }) {
   return (
     <div className="rounded-xl p-4" style={{ background: card, border: `1px solid ${hairline}` }}>
@@ -13079,6 +14490,7 @@ function DataAnalyticsView({
   const [locBalSource, setLocBalSource] = useState("customer"); // customer | vendor
   const [locBalPage, setLocBalPage] = useState(0);
   const [locBalDetail, setLocBalDetail] = useState(null); // location row drilled into
+  const [rankAll, setRankAll] = useState(null); // {title, rows, partyLabel} for the View All list
   const [scatterUnit, setScatterUnit] = useState("all");
   const [priceMin, setPriceMin] = useState("");
   const [priceMax, setPriceMax] = useState("");
@@ -13305,8 +14717,7 @@ function DataAnalyticsView({
     }
     return [...map.entries()]
       .map(([id, e]) => ({ label: customerById.get(id)?.name || "—", value: e.value, docs: e.docs }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 3);
+      .sort((a, b) => b.value - a.value);
   }, [wInvoices, customerById, invoiceTotal]);
   const topVendors = useMemo(() => {
     const map = new Map();
@@ -13318,8 +14729,7 @@ function DataAnalyticsView({
     }
     return [...map.entries()]
       .map(([id, e]) => ({ label: vendorById.get(id)?.name || "—", value: e.value, docs: e.docs }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 3);
+      .sort((a, b) => b.value - a.value);
   }, [wPurchases, vendorById]);
 
   // 3. Item / unit-type breakdown — Qty, average rate, amount per unit type.
@@ -13327,6 +14737,7 @@ function DataAnalyticsView({
     const map = new Map();
     for (const inv of wInvoices) {
       for (const it of inv.items || []) {
+        if (isCancelledItem(it)) continue;
         const e = map.get(it.unit) || { unit: it.unit, qty: 0, amount: 0 };
         e.qty += Number(it.qty) || 0;
         e.amount += lineAmount(it);
@@ -13351,6 +14762,7 @@ function DataAnalyticsView({
     if (scatterSource === "purchase") {
       for (const p of wPurchases) {
         for (const it of p.items || []) {
+          if (isCancelledItem(it)) continue;
           if (scatterUnit !== "all" && it.unit !== scatterUnit) continue;
           const rate = Number(it.rate) || 0;
           const qty = Number(it.qty) || 0;
@@ -13371,6 +14783,7 @@ function DataAnalyticsView({
     }
     for (const inv of wInvoices) {
       for (const it of inv.items || []) {
+        if (isCancelledItem(it)) continue;
         if (scatterUnit !== "all" && it.unit !== scatterUnit) continue;
         const rate = Number(it.rate) || 0;
         const qty = Number(it.qty) || 0;
@@ -13504,18 +14917,36 @@ function DataAnalyticsView({
 
         <AnalyticsCard icon={<Users size={17} color={thread} />} title="Top 3 Customers" subtitle="By sales in the selected period — tap a row for the invoice-wise breakdown">
           <HBarList
-            data={topCustomers}
+            data={topCustomers.slice(0, 3)}
             color={success}
             onRowClick={(d) => setPartyDetail({ title: "Invoices", label: d.label, docs: d.docs, refLabel: "INVOICE" })}
           />
+          {topCustomers.length > 3 && (
+            <button
+              onClick={() => setRankAll({ title: "All Customers by Sales", rows: topCustomers, partyLabel: "Customer", detailTitle: "Invoices", refLabel: "INVOICE", color: success })}
+              className="mt-3 px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: card, border: `1px solid ${hairline}`, color: thread }}
+            >
+              View All ({topCustomers.length})
+            </button>
+          )}
         </AnalyticsCard>
 
         <AnalyticsCard icon={<Users size={17} color={thread} />} title="Top 3 Vendors" subtitle="By purchases in the selected period — tap a row for the bill-wise breakdown">
           <HBarList
-            data={topVendors}
+            data={topVendors.slice(0, 3)}
             color={danger}
             onRowClick={(d) => setPartyDetail({ title: "Purchase Bills", label: d.label, docs: d.docs, refLabel: "BILL" })}
           />
+          {topVendors.length > 3 && (
+            <button
+              onClick={() => setRankAll({ title: "All Vendors by Purchases", rows: topVendors, partyLabel: "Vendor", detailTitle: "Purchase Bills", refLabel: "BILL", color: danger })}
+              className="mt-3 px-3 py-1.5 rounded-lg text-xs font-semibold"
+              style={{ background: card, border: `1px solid ${hairline}`, color: thread }}
+            >
+              View All ({topVendors.length})
+            </button>
+          )}
         </AnalyticsCard>
 
         <AnalyticsCard icon={<Landmark size={17} color={thread} />} title="Top 5 Locations" subtitle="By sales in the selected period, grouped by customer address — tap a row for the customer breakdown">
@@ -13560,6 +14991,18 @@ function DataAnalyticsView({
       )}
       {geoDetail && (
         <GeoDetailModal geo={geoDetail} onClose={() => setGeoDetail(null)} />
+      )}
+      {rankAll && (
+        <RankAllModal
+          detail={rankAll}
+          onClose={() => setRankAll(null)}
+          onPick={(row) => {
+            // Chain into the existing per-party breakdown so "View All" is a
+            // way in rather than a dead end.
+            setPartyDetail({ title: rankAll.detailTitle, label: row.label, docs: row.docs, refLabel: rankAll.refLabel });
+            setRankAll(null);
+          }}
+        />
       )}
       {locBalDetail && (
         <LocationBalanceModal
